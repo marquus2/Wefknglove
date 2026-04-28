@@ -139,7 +139,7 @@ function FloorplanCanvas(props){
         setRubber(rb => {
           if (rb && rb.w >= grid && rb.h >= grid){
             const id = `s${Math.floor(Math.random()*9000)+100}`;
-            setPlan(p => ({ ...p, rects: [...p.rects, { id, name: 'Untitled scene', x: rb.x, y: rb.y, w: rb.w, h: rb.h, kind: 'main', users: 6, gameObject: 'Scene_New' }] }));
+            setPlan(p => ({ ...p, rects: [...p.rects, { id, name: 'Untitled scene', x: rb.x, y: rb.y, w: rb.w, h: rb.h, kind: 'main', gameObject: 'Scene_New' }] }));
             setSelected(id); setTool('select');
           }
           return null;
@@ -269,7 +269,7 @@ function FloorplanCanvas(props){
     if (isConflict) return rectStyle === 'outlined' ? 'transparent' : 'oklch(0.78 0.18 28 / 0.35)';
     if (isSel)      return rectStyle === 'outlined' ? 'transparent' : 'oklch(0.85 0.12 65 / 0.35)';
     if (r.kind === 'unified-hub')     return rectStyle === 'outlined' ? 'transparent' : 'oklch(0.86 0.10 65 / 0.30)';
-    if (r.kind === 'individual-stop') return rectStyle === 'outlined' ? 'transparent' : 'var(--panel)';
+    if (r.kind === 'pod-room') return rectStyle === 'outlined' ? 'transparent' : 'var(--panel)';
     if (rectStyle === 'ghosted' || rectStyle === 'outlined') return 'transparent';
     return rectStyle === 'filled' ? 'var(--panel-2)' : 'var(--panel)';
   };
@@ -422,7 +422,7 @@ function FloorplanCanvas(props){
                     fill={rectFillFor(r, isSel, isConflict)}
                     stroke={rectStrokeFor(r, isSel, isConflict)}
                     strokeWidth={isSel||isConflict ? 2 : r.kind==='unified-hub' ? 1.5 : 1}
-                    strokeDasharray={r.kind==='individual-stop' ? '4 2' : '0'}/>
+                    strokeDasharray={r.kind==='pod-room' ? '4 2' : '0'}/>
               {isActive && <rect x={tl.x-4} y={tl.y-4} width={sw+8} height={sh+8} fill="none" stroke="var(--amber)" strokeWidth="3" strokeDasharray="6 3"/>}
               {connectFrom===r.id && <rect x={tl.x-3} y={tl.y-3} width={sw+6} height={sh+6} fill="none" stroke="var(--amber)" strokeWidth="2" strokeDasharray="4 2"/>}
               {isSel && <rect x={tl.x-1} y={tl.y-1} width={sw+2} height={sh+2} fill="none" stroke="var(--amber-deep)" strokeWidth="2" strokeDasharray="4 2" pointerEvents="none"/>}
@@ -430,9 +430,18 @@ function FloorplanCanvas(props){
                 <>
                   <text x={tl.x+6} y={tl.y+14} fill={isConflict?'var(--danger)':'var(--ink)'} fontSize="10" fontFamily="'Silkscreen', monospace" letterSpacing="0.05em">{r.id.toUpperCase()}</text>
                   <text x={tl.x+6} y={tl.y+28} fill={isConflict?'var(--danger)':'var(--ink)'} fontSize="11" fontFamily="'JetBrains Mono', monospace" fontWeight="500">{r.name}</text>
-                  {sh > 60 && <text x={tl.x+6} y={tl.y+sh-6} fill="var(--ink-3)" fontSize="9" fontFamily="'JetBrains Mono', monospace">{r.w}×{r.h}m · {r.users}u</text>}
+                  {sh > 60 && <text x={tl.x+6} y={tl.y+sh-6} fill="var(--ink-3)" fontSize="9" fontFamily="'JetBrains Mono', monospace">{r.w}×{r.h}m · 6u</text>}
                 </>
               )}
+              {r.kind === 'pod-room' && Array.isArray(r.pods) && r.pods.slice(0, 6).map((pod, idx) => {
+                const p = w2s({ x: r.x + pod.x, y: r.y + pod.y });
+                return (
+                  <g key={`${r.id}-pod-${idx}`} pointerEvents="none">
+                    <circle cx={p.x} cy={p.y} r={4} fill="var(--amber)" stroke="var(--ink)" strokeWidth="1.5" />
+                    <text x={p.x} y={p.y - 7} textAnchor="middle" fill="var(--ink-3)" fontSize="8" fontFamily="'JetBrains Mono', monospace">{idx + 1}</text>
+                  </g>
+                );
+              })}
             </g>
           );
         })}

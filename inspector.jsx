@@ -14,7 +14,7 @@ function SceneList({ plan, selected, setSelected, conflicts }){
           <span className="nm">{r.name}</span>
           <span className="meta">{r.w}×{r.h}m</span>
           {r.kind === 'unified-hub' && <span className="pixel-tag amber tiny" style={{padding:'1px 4px'}}>HUB</span>}
-          {r.kind === 'individual-stop' && <span className="pixel-tag ghost tiny" style={{padding:'1px 4px'}}>1U</span>}
+          {r.kind === 'pod-room' && <span className="pixel-tag ghost tiny" style={{padding:'1px 4px'}}>PODS</span>}
         </div>
       ))}
     </div>
@@ -28,6 +28,14 @@ function Inspector({ plan, setPlan, selected, selectedConn, setSelectedConn, onA
 
   const updateRect = (patch) => setPlan(p => ({...p, rects: p.rects.map(r => r.id === selected ? { ...r, ...patch } : r)}));
   const updateConn = (patch) => setPlan(p => ({...p, connections: p.connections.map(c => c.id === selectedConn ? { ...c, ...patch } : c)}));
+  const podRoomDefaults = [
+    { id: 'pod-1', x: 1, y: 3, gameObject: 'Scene_Pod_01' },
+    { id: 'pod-2', x: 2, y: 3, gameObject: 'Scene_Pod_02' },
+    { id: 'pod-3', x: 3, y: 3, gameObject: 'Scene_Pod_03' },
+    { id: 'pod-4', x: 1, y: 1, gameObject: 'Scene_Pod_04' },
+    { id: 'pod-5', x: 2, y: 1, gameObject: 'Scene_Pod_05' },
+    { id: 'pod-6', x: 3, y: 1, gameObject: 'Scene_Pod_06' },
+  ];
 
   return (
     <div className="inspector">
@@ -117,17 +125,16 @@ function Inspector({ plan, setPlan, selected, selectedConn, setSelectedConn, onA
 
           <div className="field">
             <div className="label">Scene type</div>
-            <select value={rect.kind} onChange={(e) => updateRect({kind: e.target.value})}>
+            <select value={rect.kind} onChange={(e) => {
+              const next = e.target.value;
+              updateRect({
+                kind: next,
+                ...(next === 'pod-room' ? { pods: rect.pods?.length === 6 ? rect.pods : podRoomDefaults } : {}),
+              });
+            }}>
               <option value="main">Main scene</option>
               <option value="unified-hub">Unified hub (alt-content)</option>
-              <option value="individual-stop">Individual stop (alt-content)</option>
-            </select>
-          </div>
-
-          <div className="field">
-            <div className="label">User capacity</div>
-            <select value={rect.users} onChange={(e) => updateRect({users: +e.target.value})}>
-              {[1,2,3,4,5,6].map(n => <option key={n} value={n}>{n} user{n>1?'s':''}</option>)}
+              <option value="pod-room">Room with 6 pods (individual)</option>
             </select>
           </div>
 
@@ -135,6 +142,23 @@ function Inspector({ plan, setPlan, selected, selectedConn, setSelectedConn, onA
             <div className="label">Unity GameObject ID</div>
             <input value={rect.gameObject} onChange={(e) => updateRect({gameObject: e.target.value})}/>
           </div>
+          {rect.kind === 'pod-room' && (
+            <div className="field">
+              <div className="label">Pods (local position inside room)</div>
+              <div className="pixel-inset" style={{padding:8, display:'flex', flexDirection:'column', gap:6}}>
+                {(rect.pods || podRoomDefaults).slice(0, 6).map((pod, i) => (
+                  <div key={pod.id || i} className="field-row pod-row">
+                    <input type="number" step="0.1" value={pod.x}
+                           onChange={(e) => updateRect({ pods: (rect.pods || podRoomDefaults).map((p, idx) => idx === i ? { ...p, x: +e.target.value } : p) })}/>
+                    <input type="number" step="0.1" value={pod.y}
+                           onChange={(e) => updateRect({ pods: (rect.pods || podRoomDefaults).map((p, idx) => idx === i ? { ...p, y: +e.target.value } : p) })}/>
+                    <input value={pod.gameObject || ''}
+                           onChange={(e) => updateRect({ pods: (rect.pods || podRoomDefaults).map((p, idx) => idx === i ? { ...p, gameObject: e.target.value } : p) })}/>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="divider"/>
           <div className="label">Connections from this scene</div>
@@ -168,6 +192,28 @@ function Inspector({ plan, setPlan, selected, selectedConn, setSelectedConn, onA
               <option value="unified">Unified (● · 1 route, todos juntos)</option>
               <option value="individual">Individual (×6 · 6 rutas paralelas)</option>
             </select>
+          </div>
+          <div className="field">
+            <div className="label">From anchor</div>
+            <div className="field-row">
+              <select value={conn.fromAnchor?.side || ''} onChange={(e) => updateConn({ fromAnchor: { side: e.target.value || undefined, t: conn.fromAnchor?.t ?? 0.5 } })}>
+                <option value="">Auto side</option>
+                <option value="N">North</option><option value="E">East</option><option value="S">South</option><option value="W">West</option>
+              </select>
+              <input type="number" min="0.04" max="0.96" step="0.01" value={conn.fromAnchor?.t ?? 0.5}
+                     onChange={(e) => updateConn({ fromAnchor: { side: conn.fromAnchor?.side, t: +e.target.value } })}/>
+            </div>
+          </div>
+          <div className="field">
+            <div className="label">To anchor</div>
+            <div className="field-row">
+              <select value={conn.toAnchor?.side || ''} onChange={(e) => updateConn({ toAnchor: { side: e.target.value || undefined, t: conn.toAnchor?.t ?? 0.5 } })}>
+                <option value="">Auto side</option>
+                <option value="N">North</option><option value="E">East</option><option value="S">South</option><option value="W">West</option>
+              </select>
+              <input type="number" min="0.04" max="0.96" step="0.01" value={conn.toAnchor?.t ?? 0.5}
+                     onChange={(e) => updateConn({ toAnchor: { side: conn.toAnchor?.side, t: +e.target.value } })}/>
+            </div>
           </div>
           <div className="pixel-inset" style={{padding:'6px 8px', fontSize:10, lineHeight:1.5}}>
             {conn.mode === 'unified'
@@ -214,8 +260,16 @@ function Inspector({ plan, setPlan, selected, selectedConn, setSelectedConn, onA
 // Creator modal — define a rect from scratch
 function CreatorModal({ onClose, onCreate, plan }){
   const [form, setForm] = useState({
-    name: 'New scene', kind: 'main', w: 4, h: 3, users: 6,
+    name: 'New scene', kind: 'main', w: 4, h: 3,
     gameObject: 'Scene_New_01', connectsTo: [],
+    pods: [
+      { id: 'pod-1', x: 1, y: 3, gameObject: 'Scene_Pod_01' },
+      { id: 'pod-2', x: 2, y: 3, gameObject: 'Scene_Pod_02' },
+      { id: 'pod-3', x: 3, y: 3, gameObject: 'Scene_Pod_03' },
+      { id: 'pod-4', x: 1, y: 1, gameObject: 'Scene_Pod_04' },
+      { id: 'pod-5', x: 2, y: 1, gameObject: 'Scene_Pod_05' },
+      { id: 'pod-6', x: 3, y: 1, gameObject: 'Scene_Pod_06' },
+    ],
   });
 
   return (
@@ -248,7 +302,7 @@ function CreatorModal({ onClose, onCreate, plan }){
             <select value={form.kind} onChange={(e) => setForm({...form, kind: e.target.value})}>
               <option value="main">Main scene</option>
               <option value="unified-hub">Unified hub · alt-content (×6)</option>
-              <option value="individual-stop">Individual stop · alt-content (×1)</option>
+              <option value="pod-room">Room with 6 pods · individual lanes</option>
             </select>
           </div>
           <div className="field">
@@ -297,8 +351,8 @@ function ExportView({ project, plan, onClose }){
         position: { x: r.x, y: r.y },
         size: { w: r.w, h: r.h },
         kind: r.kind,
-        users: r.users,
         gameObject: r.gameObject,
+        pods: r.pods,
       })),
       connections: plan.connections.map(c => {
         const lanes = PathUtil.computeLanes(c, plan.rects);

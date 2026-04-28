@@ -36,6 +36,89 @@ function App(){
   const [playSpeed, setPlaySpeed] = useState(1);
   const [playMode, setPlayMode] = useState(false);
 
+  const dwgInputRef = useRef(null);
+
+  const rotatePlan90 = useCallback((clockwise = true) => {
+    setPlanWithHistory(prev => {
+      const oldW = prev.bounds.w;
+      const oldH = prev.bounds.h;
+      const rotatePoint = (pt) => clockwise
+        ? ({ x: oldH - pt.y, y: pt.x })
+        : ({ x: pt.y, y: oldW - pt.x });
+      const rotateRect = (r) => {
+        const corners = [
+          { x: r.x, y: r.y },
+          { x: r.x + r.w, y: r.y },
+          { x: r.x + r.w, y: r.y + r.h },
+          { x: r.x, y: r.y + r.h },
+        ].map(rotatePoint);
+        const xs = corners.map(c => c.x);
+        const ys = corners.map(c => c.y);
+        return {
+          ...r,
+          x: Math.min(...xs),
+          y: Math.min(...ys),
+          w: Math.max(...xs) - Math.min(...xs),
+          h: Math.max(...ys) - Math.min(...ys),
+          pods: Array.isArray(r.pods)
+            ? r.pods.map(pod => clockwise
+              ? ({ ...pod, x: r.h - pod.y, y: pod.x })
+              : ({ ...pod, x: pod.y, y: r.w - pod.x }))
+            : r.pods,
+        };
+      };
+      return {
+        ...prev,
+        bounds: { w: oldH, h: oldW },
+        rects: prev.rects.map(rotateRect),
+        connections: prev.connections.map(c => ({
+          ...c,
+          customMiddleNodes: c.customMiddleNodes?.map(rotatePoint) || null,
+        })),
+      };
+    });
+  }, []);
+
+  const rotateRect90 = useCallback((id, clockwise = true) => {
+    setPlanWithHistory(prev => ({
+      ...prev,
+      rects: prev.rects.map(r => {
+        if (r.id !== id) return r;
+        const centerX = r.x + r.w / 2;
+        const centerY = r.y + r.h / 2;
+        const nextW = r.h;
+        const nextH = r.w;
+        return {
+          ...r,
+          x: Math.max(0, Math.min(prev.bounds.w - nextW, snap(centerX - nextW / 2, grid))),
+          y: Math.max(0, Math.min(prev.bounds.h - nextH, snap(centerY - nextH / 2, grid))),
+          w: nextW,
+          h: nextH,
+          pods: Array.isArray(r.pods)
+            ? r.pods.map(pod => clockwise
+              ? ({ ...pod, x: r.h - pod.y, y: pod.x })
+              : ({ ...pod, x: pod.y, y: r.w - pod.x }))
+            : r.pods,
+        };
+      }),
+    }));
+  }, [grid]);
+
+  const onPickDwg = useCallback(() => dwgInputRef.current?.click(), []);
+
+  const onDwgSelected = useCallback((e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.dwg')) {
+      showToast('Archivo inválido · elegí un .dwg');
+      e.target.value = '';
+      return;
+    }
+    setPlanWithHistory(prev => ({ ...prev, sourceFile: file.name }));
+    showToast(`DWG cargado: ${file.name}`);
+    e.target.value = '';
+  }, []);
+
   useEffect(() => { document.documentElement.dataset.theme = t.dark ? 'dark' : 'light'; }, [t.dark]);
   useEffect(() => {
     setLayers(L => ({ ...L, minimap: t.showMinimap }));
@@ -231,7 +314,8 @@ function App(){
 
                 <div className="tool-group">
                   <h4>Plan source</h4>
-                  <button className="pixel-btn sm" style={{width:'100%', justifyContent:'center'}} onClick={() => showToast('DWG import dialog')}>↥ IMPORT .DWG</button>
+                  <button className="pixel-btn sm" style={{width:'100%', justifyContent:'center'}} onClick={onPickDwg}>↥ IMPORT .DWG</button>
+                  <input ref={dwgInputRef} type="file" accept=".dwg" onChange={onDwgSelected} style={{display:'none'}} />
                   <button className="pixel-btn sm ghost" style={{width:'100%', justifyContent:'center', marginTop:6}} onClick={() => showToast('Loaded template')}>≡ LOAD TEMPLATE</button>
                 </div>
 
@@ -302,6 +386,10 @@ function App(){
                      selectedConn={selectedConn} setSelectedConn={setSelectedConn}
                      onAutoRoute={onAutoRoute}
                      onDelete={onDeleteRect}
+                     onRotateRectCW={() => selected && rotateRect90(selected, true)}
+                     onRotateRectCCW={() => selected && rotateRect90(selected, false)}
+                     onRotatePlanCW={() => rotatePlan90(true)}
+                     onRotatePlanCCW={() => rotatePlan90(false)}
                      conflicts={conflicts}/>
         </div>
       )}

@@ -88,7 +88,8 @@ function FloorplanCanvas(props){
     if (!wrapRef.current) return;
     const fit = () => {
       const r = wrapRef.current.getBoundingClientRect();
-      const s = Math.max(8, Math.min((r.width - 80) / plan.bounds.w, (r.height - 80) / plan.bounds.h));
+      const fitScale = Math.min((r.width - 80) / plan.bounds.w, (r.height - 80) / plan.bounds.h);
+      const s = Math.max(8, fitScale * 0.5);
       setView({ x: (r.width - plan.bounds.w * s) / 2, y: (r.height - plan.bounds.h * s) / 2, scale: s });
     };
     fit();
@@ -203,6 +204,28 @@ function FloorplanCanvas(props){
   };
 
   // ── Node drag (unified mode only, middle nodes only) ─────────────────────
+
+  const beginPodDrag = useCallback((rect, podIdx, e) => {
+    if (tool !== 'edit') return;
+    e.stopPropagation();
+    const domRect = wrapRef.current.getBoundingClientRect();
+    const move = (ev) => {
+      const sp = { x: ev.clientX - domRect.left, y: ev.clientY - domRect.top };
+      const wp = s2w(sp);
+      const localX = Math.max(0, Math.min(rect.w, snap(wp.x - rect.x, grid)));
+      const localY = Math.max(0, Math.min(rect.h, snap(wp.y - rect.y, grid)));
+      setPlan(p => ({
+        ...p,
+        rects: p.rects.map(r => r.id === rect.id
+          ? { ...r, pods: (r.pods || []).map((pod, i) => i === podIdx ? { ...pod, x: localX, y: localY } : pod) }
+          : r),
+      }));
+    };
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }, [tool, s2w, grid, setPlan]);
+
   const beginNodeDrag = useCallback((connId, middleIdx, e, currentAllNodes) => {
     e.stopPropagation();
     const domRect = wrapRef.current.getBoundingClientRect();
@@ -436,8 +459,11 @@ function FloorplanCanvas(props){
               {r.kind === 'pod-room' && Array.isArray(r.pods) && r.pods.slice(0, 6).map((pod, idx) => {
                 const p = w2s({ x: r.x + pod.x, y: r.y + pod.y });
                 return (
-                  <g key={`${r.id}-pod-${idx}`} pointerEvents="none">
-                    <circle cx={p.x} cy={p.y} r={4} fill="var(--amber)" stroke="var(--ink)" strokeWidth="1.5" />
+                  <g key={`${r.id}-pod-${idx}`}>
+                    <circle cx={p.x} cy={p.y} r={tool === 'edit' && selected === r.id ? 6 : 4}
+                            fill="var(--amber)" stroke="var(--ink)" strokeWidth="1.5"
+                            style={{cursor: tool === 'edit' && selected === r.id ? 'grab' : 'default'}}
+                            onPointerDown={tool === 'edit' && selected === r.id ? (e) => beginPodDrag(r, idx, e) : undefined} />
                     <text x={p.x} y={p.y - 7} textAnchor="middle" fill="var(--ink-3)" fontSize="8" fontFamily="'JetBrains Mono', monospace">{idx + 1}</text>
                   </g>
                 );

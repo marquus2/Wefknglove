@@ -38,6 +38,9 @@ const PathUtil = (function(){
     if (dir === 'E') return { x: r.x + r.w,     y: r.y + r.h * t, dir };
     if (dir === 'W') return { x: r.x,           y: r.y + r.h * t, dir };
   }
+  function podWorldAnchor(room, pod){
+    return { x: room.x + pod.x, y: room.y + pod.y, dir: 'POD' };
+  }
 
   function rectsOverlap(a, b){
     return !(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y);
@@ -78,9 +81,11 @@ const PathUtil = (function(){
     const tA  = opts.tA  ?? 0.5;
     const tB  = opts.tB  ?? 0.5;
     const mrg = opts.margin ?? 0.6;
-    const { aDir, bDir } = pickFaces(a, b);
-    const pa = rectEdgeAnchor(a, aDir, tA);
-    const pb = rectEdgeAnchor(b, bDir, tB);
+    const pick = pickFaces(a, b);
+    const aDir = opts.aDir || pick.aDir;
+    const bDir = opts.bDir || pick.bDir;
+    const pa = opts.startPoint ? { ...opts.startPoint, dir: aDir } : rectEdgeAnchor(a, aDir, tA);
+    const pb = opts.endPoint ? { ...opts.endPoint, dir: bDir } : rectEdgeAnchor(b, bDir, tB);
 
     // Margin steps (push path away from face before turning)
     const px = aDir === 'E' ? pa.x + mrg : aDir === 'W' ? pa.x - mrg : pa.x;
@@ -118,33 +123,42 @@ const PathUtil = (function(){
     const b = rects.find(r => r.id === conn.to);
     if (!a || !b) return [];
 
-    const { aDir, bDir } = pickFaces(a, b);
+    const pick = pickFaces(a, b);
+    const aDir = conn.fromAnchor?.side || pick.aDir;
+    const bDir = conn.toAnchor?.side || pick.bDir;
     // Face lengths: used to convert absolute-meter offsets into t-fractions
     const flenA = (aDir === 'E' || aDir === 'W') ? a.h : a.w;
     const flenB = (bDir === 'E' || bDir === 'W') ? b.h : b.w;
 
     // Build a route for given face t values, injecting custom middle nodes if set
-    function buildRoute(tA, tB){
-      const start = rectEdgeAnchor(a, aDir, tA);
-      const end   = rectEdgeAnchor(b, bDir, tB);
+    function buildRoute(tA, tB, opts = {}){
+      const start = opts.startPoint || rectEdgeAnchor(a, aDir, tA);
+      const end   = opts.endPoint || rectEdgeAnchor(b, bDir, tB);
       if (conn.customMiddleNodes && conn.customMiddleNodes.length){
         // Endpoints are always live (connected to faces), middle nodes are custom
         return removeCollinear([start, ...conn.customMiddleNodes, end]);
       }
-      return route(a, b, { tA, tB });
+      return route(a, b, { tA, tB, aDir, bDir, startPoint: opts.startPoint, endPoint: opts.endPoint });
     }
 
     if (conn.mode !== 'individual'){
       // Unified: single center lane
-      return [buildRoute(0.5, 0.5)];
+      const fromT = conn.fromAnchor?.t ?? 0.5;
+      const toT = conn.toAnchor?.t ?? 0.5;
+      return [buildRoute(fromT, toT)];
     }
 
     // Individual: 6 lanes with absolute-meter perpendicular offset
-    return LANE_OFFSETS.map(offset => {
-      const tA = clamp(0.5 + offset / flenA, 0.04, 0.96);
-      const tB = clamp(0.5 + offset / flenB, 0.04, 0.96);
-      // No custom nodes for individual lanes → always auto-routed
-      return route(a, b, { tA, tB });
+    const fromPods = (a.kind === 'pod-room' && Array.isArray(a.pods)) ? a.pods.slice(0, LANE_COUNT) : null;
+    const toPods = (b.kind === 'pod-room' && Array.isArray(b.pods)) ? b.pods.slice(0, LANE_COUNT) : null;
+    const fromTBase = conn.fromAnchor?.t ?? 0.5;
+    const toTBase = conn.toAnchor?.t ?? 0.5;
+    return LANE_OFFSETS.map((offset, laneIdx) => {
+      const tA = clamp(fromTBase + offset / flenA, 0.04, 0.96);
+      const tB = clamp(toTBase + offset / flenB, 0.04, 0.96);
+      const startPoint = fromPods?.[laneIdx] ? podWorldAnchor(a, fromPods[laneIdx]) : null;
+      const endPoint = toPods?.[laneIdx] ? podWorldAnchor(b, toPods[laneIdx]) : null;
+      return route(a, b, { tA, tB, aDir, bDir, startPoint, endPoint });
     });
   }
 
@@ -192,7 +206,7 @@ const PathUtil = (function(){
 
   return {
     route, toPathD, removeCollinear, computeLanes,
-    rectCenter, rectEdgeAnchor, rectsOverlap, pickFaces,
+    rectCenter, rectEdgeAnchor, rectsOverlap, pickFaces, podWorldAnchor,
     LANE_COUNT, LANE_OFFSETS, LANE_WIDTH, LANE_SPACING, LANE_COLORS,
   };
 })();

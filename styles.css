@@ -701,8 +701,10 @@ button, input, select, textarea{
 }
 .field-row{
   display:grid; grid-template-columns: 1fr 1fr; gap: 6px;
+  width: 100%;
 }
 .field-row.three{ grid-template-columns: 1fr 1fr 1fr; }
+.pod-row{ grid-template-columns: 62px 62px minmax(0, 1fr); }
 .field input, .field select, .field textarea{
   background: var(--panel-2);
   border: 1px solid var(--line);
@@ -713,6 +715,7 @@ button, input, select, textarea{
   color: var(--fg);
   font-family: inherit;
 }
+.field input, .field select, .field textarea{ width: 100%; min-width: 0; }
 .field input:focus, .field select:focus{
   background: var(--panel); border-color: var(--amber-deep);
 }

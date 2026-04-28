@@ -328,14 +328,13 @@ function App(){
                         }
                         setPlanWithHistory(p => ({
                           ...p,
-                          rects: [...p.rects, { id, name: form.name, x, y, w: form.w, h: form.h, kind: form.kind, users: form.users, gameObject: form.gameObject }],
+                          rects: [...p.rects, { id, name: form.name, x, y, w: form.w, h: form.h, kind: form.kind, gameObject: form.gameObject, ...(form.kind === 'pod-room' ? { pods: form.pods } : {}) }],
                           connections: [
                             ...p.connections,
                             ...form.connectsTo.map(targetId => ({
                               id: 'c' + Math.floor(Math.random()*9000+100),
                               from: id, to: targetId,
-                              paths: form.kind === 'individual-stop' ? 1 : 6,
-                              mode: form.kind === 'individual-stop' ? 'split' : 'unified',
+                              mode: form.kind === 'pod-room' ? 'individual' : 'unified',
                             }))
                           ]
                         }));
@@ -392,7 +391,7 @@ function SceneListInline({ plan, selected, setSelected, conflicts }){
           <span className="ix">{r.id.replace('s','')}</span>
           <span className="nm">{r.name}</span>
           {r.kind === 'unified-hub' && <span style={{fontSize:9, color:'var(--amber-deep)'}}>HUB</span>}
-          {r.kind === 'individual-stop' && <span style={{fontSize:9, color:'var(--ink-3)'}}>1U</span>}
+          {r.kind === 'pod-room' && <span style={{fontSize:9, color:'var(--ink-3)'}}>PODS</span>}
         </div>
       ))}
     </div>
@@ -433,7 +432,7 @@ function PlayMode({ plan, step, setStep, isPlaying, setIsPlaying, speed, setSpee
           <div className="play-info">
             <div className="ix">SCENE {(step+1).toString().padStart(2,'0')} / {total.toString().padStart(2,'0')} · {currentId?.toUpperCase()}</div>
             <div className="nm">{currentRect?.name}</div>
-            <div className="meta">{currentRect?.w}×{currentRect?.h}m · {currentRect?.users} user{currentRect?.users>1?'s':''} · {currentRect?.kind}</div>
+            <div className="meta">{currentRect?.w}×{currentRect?.h}m · 6 users · {currentRect?.kind}</div>
             <div className="meta" style={{marginTop:6}}>{currentRect?.gameObject}</div>
             <div className="row gap-12" style={{marginTop:10}}>
               <span className="status-dot amber"/>

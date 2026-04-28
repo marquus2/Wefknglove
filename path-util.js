@@ -4,17 +4,20 @@
 const PathUtil = (function(){
 
   // ── Constants ──────────────────────────────────────────────────────────────
-  const LANE_COUNT   = 6;
-  const LANE_WIDTH   = 1.0;   // meters, each lane is 1m wide
-  const LANE_GAP     = 0.1;   // meters gap between lane edges
-  const LANE_SPACING = LANE_WIDTH + LANE_GAP;  // 1.1m center-to-center
-  const TOTAL_SPAN   = (LANE_COUNT - 1) * LANE_SPACING;  // 5.5m
-
-  // Perpendicular offsets in meters for lanes 0-5 (symmetric around 0)
-  // → [-2.75, -1.65, -0.55, +0.55, +1.65, +2.75]
-  const LANE_OFFSETS = Array.from({ length: LANE_COUNT }, (_, i) =>
-    -TOTAL_SPAN / 2 + i * LANE_SPACING
-  );
+  const LANE_COUNT = 6;
+  let LANE_WIDTH = 1.0;   // meters, each lane is 1m wide
+  let LANE_GAP = 0.1;     // meters gap between lane edges
+  let LANE_SPACING = LANE_WIDTH + LANE_GAP;  // center-to-center
+  let TOTAL_SPAN = (LANE_COUNT - 1) * LANE_SPACING;
+  let LANE_OFFSETS = [];
+  const refreshLaneMetrics = () => {
+    LANE_SPACING = LANE_WIDTH + LANE_GAP;
+    TOTAL_SPAN = (LANE_COUNT - 1) * LANE_SPACING;
+    LANE_OFFSETS = Array.from({ length: LANE_COUNT }, (_, i) =>
+      -TOTAL_SPAN / 2 + i * LANE_SPACING
+    );
+  };
+  refreshLaneMetrics();
 
   // 6 visually distinct colors for individual lanes
   const LANE_COLORS = [
@@ -207,7 +210,20 @@ const PathUtil = (function(){
   return {
     route, toPathD, removeCollinear, computeLanes,
     rectCenter, rectEdgeAnchor, rectsOverlap, pickFaces, podWorldAnchor,
-    LANE_COUNT, LANE_OFFSETS, LANE_WIDTH, LANE_SPACING, LANE_COLORS,
+    get LANE_COUNT(){ return LANE_COUNT; },
+    get LANE_OFFSETS(){ return LANE_OFFSETS; },
+    get LANE_WIDTH(){ return LANE_WIDTH; },
+    get LANE_SPACING(){ return LANE_SPACING; },
+    get LANE_GAP(){ return LANE_GAP; },
+    setLaneGap(gap){
+      LANE_GAP = Math.max(0, +gap || 0);
+      refreshLaneMetrics();
+    },
+    setLaneWidth(width){
+      LANE_WIDTH = Math.max(0.1, +width || 0.1);
+      refreshLaneMetrics();
+    },
+    LANE_COLORS,
   };
 })();
 

@@ -8,6 +8,8 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "dark": false,
   "gridStyle": "lines",
   "pathStyle": "orthogonal",
+  "pathGap": 0.1,
+  "lineWidth": 1,
   "rectStyle": "filled",
   "sidebarLayout": "left",
   "showMinimap": true
@@ -36,10 +38,180 @@ function App(){
   const [playSpeed, setPlaySpeed] = useState(1);
   const [playMode, setPlayMode] = useState(false);
 
+  const dwgInputRef = useRef(null);
+  const dwgApiRef = useRef(null);
+
+  const rotatePlan90 = useCallback((clockwise = true) => {
+    setPlanWithHistory(prev => {
+      const oldW = prev.bounds.w;
+      const oldH = prev.bounds.h;
+      const rotatePoint = (pt) => clockwise
+        ? ({ x: oldH - pt.y, y: pt.x })
+        : ({ x: pt.y, y: oldW - pt.x });
+      const rotateRect = (r) => {
+        const corners = [
+          { x: r.x, y: r.y },
+          { x: r.x + r.w, y: r.y },
+          { x: r.x + r.w, y: r.y + r.h },
+          { x: r.x, y: r.y + r.h },
+        ].map(rotatePoint);
+        const xs = corners.map(c => c.x);
+        const ys = corners.map(c => c.y);
+        return {
+          ...r,
+          x: Math.min(...xs),
+          y: Math.min(...ys),
+          w: Math.max(...xs) - Math.min(...xs),
+          h: Math.max(...ys) - Math.min(...ys),
+          pods: Array.isArray(r.pods)
+            ? r.pods.map(pod => clockwise
+              ? ({ ...pod, x: r.h - pod.y, y: pod.x })
+              : ({ ...pod, x: pod.y, y: r.w - pod.x }))
+            : r.pods,
+        };
+      };
+      return {
+        ...prev,
+        bounds: { w: oldH, h: oldW },
+        rects: prev.rects.map(rotateRect),
+        connections: prev.connections.map(c => ({
+          ...c,
+          customMiddleNodes: c.customMiddleNodes?.map(rotatePoint) || null,
+        })),
+      };
+    });
+  }, []);
+
+  const rotateRect90 = useCallback((id, clockwise = true) => {
+    setPlanWithHistory(prev => ({
+      ...prev,
+      rects: prev.rects.map(r => {
+        if (r.id !== id) return r;
+        const centerX = r.x + r.w / 2;
+        const centerY = r.y + r.h / 2;
+        const nextW = r.h;
+        const nextH = r.w;
+        return {
+          ...r,
+          x: Math.max(0, Math.min(prev.bounds.w - nextW, snap(centerX - nextW / 2, grid))),
+          y: Math.max(0, Math.min(prev.bounds.h - nextH, snap(centerY - nextH / 2, grid))),
+          w: nextW,
+          h: nextH,
+          pods: Array.isArray(r.pods)
+            ? r.pods.map(pod => clockwise
+              ? ({ ...pod, x: r.h - pod.y, y: pod.x })
+              : ({ ...pod, x: pod.y, y: r.w - pod.x }))
+            : r.pods,
+        };
+      }),
+    }));
+  }, [grid]);
+
+  const processDwgFile = useCallback((file) => {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.dwg')) {
+      showToast('Archivo inválido · elegí un .dwg');
+      return;
+    }
+    const loadDwg = async () => {
+      try {
+        if (!dwgApiRef.current){
+          const [dwgPkg, svgPkg] = await Promise.all([
+            import('https://esm.sh/@mlightcad/libredwg-web@0.7.0'),
+            import('https://esm.sh/@mlightcad/libredwg-web@0.7.0/lib/svg/svgConverter.js'),
+          ]);
+          const lib = await dwgPkg.LibreDwg.create('https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@0.7.0/wasm/');
+          dwgApiRef.current = {
+            lib,
+            Dwg_File_Type: dwgPkg.Dwg_File_Type,
+            SvgConverter: svgPkg.SvgConverter,
+          };
+        }
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const { lib, Dwg_File_Type, SvgConverter } = dwgApiRef.current;
+        const dwgData = lib.dwg_read_data(bytes, Dwg_File_Type.DWG);
+        const db = lib.convert(dwgData);
+        const svgRaw = new SvgConverter().convert(db);
+        lib.dwg_free(dwgData);
+        const svgDataUri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgRaw)}`;
+
+        setPlanWithHistory(prev => {
+          const baseW = Math.max(4, +(prev.bounds.w * 0.9).toFixed(2));
+          const baseH = Math.max(4, +(prev.bounds.h * 0.9).toFixed(2));
+          return {
+            ...prev,
+            sourceFile: file.name,
+            dwgRef: {
+              x: +(prev.bounds.w / 2).toFixed(2),
+              y: +(prev.bounds.h / 2).toFixed(2),
+              w: baseW,
+              h: baseH,
+              baseW,
+              baseH,
+              visible: true,
+              svgDataUri,
+            },
+          };
+        });
+        showToast(`DWG cargado: ${file.name}`);
+      } catch (err){
+        console.error(err);
+        showToast('No se pudo renderizar el DWG');
+      }
+    };
+    loadDwg();
+  }, []);
+
+  const onPickDwg = useCallback(async () => {
+    let shouldFallbackToInput = true;
+    try {
+      if (window.showOpenFilePicker) {
+        const [handle] = await window.showOpenFilePicker({
+          multiple: false,
+          types: [{ description: 'DWG files', accept: { 'application/acad': ['.dwg'] } }],
+        });
+        const file = await handle.getFile();
+        processDwgFile(file);
+        shouldFallbackToInput = false;
+        return;
+      }
+    } catch (err){
+      if (err?.name === 'AbortError') return;
+      console.warn('showOpenFilePicker falló, usando input fallback', err);
+    }
+    if (!shouldFallbackToInput) return;
+    if (!dwgInputRef.current) {
+      showToast('No se pudo abrir el selector de archivos');
+      return;
+    }
+    dwgInputRef.current.value = '';
+    dwgInputRef.current.click();
+  }, [processDwgFile]);
+
+  const onDwgSelected = useCallback((e) => {
+    const file = e.target.files?.[0];
+    processDwgFile(file);
+    e.target.value = '';
+  }, [processDwgFile]);
+
+  const updateDwgRef = useCallback((patch) => {
+    setPlanWithHistory(prev => {
+      if (!prev.dwgRef) return prev;
+      return { ...prev, dwgRef: { ...prev.dwgRef, ...patch } };
+    });
+  }, []);
+
   useEffect(() => { document.documentElement.dataset.theme = t.dark ? 'dark' : 'light'; }, [t.dark]);
   useEffect(() => {
     setLayers(L => ({ ...L, minimap: t.showMinimap }));
   }, [t.showMinimap]);
+  useEffect(() => {
+    if (typeof PathUtil?.setLaneGap === 'function') {
+      PathUtil.setLaneGap(t.pathGap);
+    } else {
+      console.warn('PathUtil.setLaneGap no está disponible; usando spacing por defecto.');
+    }
+  }, [t.pathGap]);
 
   const conflicts = useMemo(() => findConflicts(plan.rects), [plan.rects]);
 
@@ -231,7 +403,32 @@ function App(){
 
                 <div className="tool-group">
                   <h4>Plan source</h4>
-                  <button className="pixel-btn sm" style={{width:'100%', justifyContent:'center'}} onClick={() => showToast('DWG import dialog')}>↥ IMPORT .DWG</button>
+                  <button className="pixel-btn sm" style={{width:'100%', justifyContent:'center'}} onClick={onPickDwg}>↥ IMPORT .DWG</button>
+                  <input ref={dwgInputRef} id="dwg-input" type="file" accept=".dwg" onChange={onDwgSelected}
+                         style={{position:'absolute', left:'-99999px', width:1, height:1, opacity:0, pointerEvents:'none'}} />
+                  {plan.sourceFile && plan.dwgRef && (
+                    <div className="pixel-inset" style={{marginTop:6, padding:6, display:'flex', flexDirection:'column', gap:6}}>
+                      <div className="tiny" style={{wordBreak:'break-word'}}>REF: {plan.sourceFile}</div>
+                      <label className="tiny" style={{display:'flex', alignItems:'center', gap:6}}>
+                        <input type="checkbox" checked={plan.dwgRef.visible !== false}
+                               onChange={(e) => updateDwgRef({ visible: e.target.checked })}/>
+                        Mostrar en viewport
+                      </label>
+                      <div className="tiny">Escala</div>
+                      <input type="range" min="0.25" max="2" step="0.05"
+                             value={(plan.dwgRef.w / (plan.dwgRef.baseW || plan.dwgRef.w)).toFixed(2)}
+                             onChange={(e) => {
+                               const f = +e.target.value;
+                               const bw = plan.dwgRef.baseW || plan.dwgRef.w;
+                               const bh = plan.dwgRef.baseH || plan.dwgRef.h;
+                               updateDwgRef({ w: +(bw * f).toFixed(2), h: +(bh * f).toFixed(2) });
+                             }} />
+                      <button className="pixel-btn sm ghost" style={{justifyContent:'center'}}
+                              onClick={() => updateDwgRef({ x: +(plan.bounds.w / 2).toFixed(2), y: +(plan.bounds.h / 2).toFixed(2) })}>
+                        CENTER REF
+                      </button>
+                    </div>
+                  )}
                   <button className="pixel-btn sm ghost" style={{width:'100%', justifyContent:'center', marginTop:6}} onClick={() => showToast('Loaded template')}>≡ LOAD TEMPLATE</button>
                 </div>
 
@@ -287,6 +484,7 @@ function App(){
               selected={selected} setSelected={setSelected}
               tool={tool} setTool={setTool}
               grid={grid}
+              pathWidth={t.lineWidth}
               gridStyle={t.gridStyle} pathStyle={t.pathStyle} rectStyle={t.rectStyle}
               layers={layers} setLayers={setLayers}
               conflicts={conflicts}
@@ -302,6 +500,10 @@ function App(){
                      selectedConn={selectedConn} setSelectedConn={setSelectedConn}
                      onAutoRoute={onAutoRoute}
                      onDelete={onDeleteRect}
+                     onRotateRectCW={() => selected && rotateRect90(selected, true)}
+                     onRotateRectCCW={() => selected && rotateRect90(selected, false)}
+                     onRotatePlanCW={() => rotatePlan90(true)}
+                     onRotatePlanCCW={() => rotatePlan90(false)}
                      conflicts={conflicts}/>
         </div>
       )}
@@ -364,6 +566,10 @@ function App(){
         <TweakRadio label="Path style" value={t.pathStyle}
                     options={['orthogonal','rounded','pixel']}
                     onChange={v => setTweak('pathStyle', v)} />
+        <TweakSlider label="Path distance" value={t.pathGap} min={0} max={1} step={0.05} unit="m"
+                    onChange={v => setTweak('pathGap', v)} />
+        <TweakSlider label="Line width" value={t.lineWidth} min={0.4} max={2} step={0.1} unit="x"
+                    onChange={v => setTweak('lineWidth', v)} />
         <TweakRadio label="Rect style" value={t.rectStyle}
                     options={['filled','outlined','ghosted']}
                     onChange={v => setTweak('rectStyle', v)} />
@@ -445,6 +651,7 @@ function PlayMode({ plan, step, setStep, isPlaying, setIsPlaying, speed, setSpee
               selected={currentId} setSelected={() => {}}
               tool="select" setTool={() => {}}
               grid={0.5}
+              pathWidth={1}
               gridStyle={gridStyle} pathStyle={pathStyle} rectStyle={rectStyle}
               layers={{ grid: true, rects: true, paths: true, labels: true, minimap: false }}
               setLayers={() => {}}

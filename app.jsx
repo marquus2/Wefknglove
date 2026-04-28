@@ -107,7 +107,11 @@ function App(){
     }));
   }, [grid]);
 
-  const onPickDwg = useCallback(() => dwgInputRef.current?.click(), []);
+  const onPickDwg = useCallback(() => {
+    if (!dwgInputRef.current) return;
+    dwgInputRef.current.value = '';
+    dwgInputRef.current.click();
+  }, []);
 
   const onDwgSelected = useCallback((e) => {
     const file = e.target.files?.[0];
@@ -377,7 +381,8 @@ function App(){
                 <div className="tool-group">
                   <h4>Plan source</h4>
                   <button className="pixel-btn sm" style={{width:'100%', justifyContent:'center'}} onClick={onPickDwg}>↥ IMPORT .DWG</button>
-                  <input ref={dwgInputRef} type="file" accept=".dwg" onChange={onDwgSelected} style={{display:'none'}} />
+                  <input ref={dwgInputRef} id="dwg-input" type="file" accept=".dwg" onChange={onDwgSelected}
+                         style={{position:'absolute', left:'-99999px', width:1, height:1, opacity:0, pointerEvents:'none'}} />
                   {plan.sourceFile && plan.dwgRef && (
                     <div className="pixel-inset" style={{marginTop:6, padding:6, display:'flex', flexDirection:'column', gap:6}}>
                       <div className="tiny" style={{wordBreak:'break-word'}}>REF: {plan.sourceFile}</div>

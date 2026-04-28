@@ -114,9 +114,32 @@ function App(){
       e.target.value = '';
       return;
     }
-    setPlanWithHistory(prev => ({ ...prev, sourceFile: file.name }));
+    setPlanWithHistory(prev => {
+      const baseW = Math.max(4, +(prev.bounds.w * 0.9).toFixed(2));
+      const baseH = Math.max(4, +(prev.bounds.h * 0.9).toFixed(2));
+      return {
+        ...prev,
+        sourceFile: file.name,
+        dwgRef: {
+          x: +(prev.bounds.w / 2).toFixed(2),
+          y: +(prev.bounds.h / 2).toFixed(2),
+          w: baseW,
+          h: baseH,
+          baseW,
+          baseH,
+          visible: true,
+        },
+      };
+    });
     showToast(`DWG cargado: ${file.name}`);
     e.target.value = '';
+  }, []);
+
+  const updateDwgRef = useCallback((patch) => {
+    setPlanWithHistory(prev => {
+      if (!prev.dwgRef) return prev;
+      return { ...prev, dwgRef: { ...prev.dwgRef, ...patch } };
+    });
   }, []);
 
   useEffect(() => { document.documentElement.dataset.theme = t.dark ? 'dark' : 'light'; }, [t.dark]);
@@ -316,6 +339,29 @@ function App(){
                   <h4>Plan source</h4>
                   <button className="pixel-btn sm" style={{width:'100%', justifyContent:'center'}} onClick={onPickDwg}>↥ IMPORT .DWG</button>
                   <input ref={dwgInputRef} type="file" accept=".dwg" onChange={onDwgSelected} style={{display:'none'}} />
+                  {plan.sourceFile && plan.dwgRef && (
+                    <div className="pixel-inset" style={{marginTop:6, padding:6, display:'flex', flexDirection:'column', gap:6}}>
+                      <div className="tiny" style={{wordBreak:'break-word'}}>REF: {plan.sourceFile}</div>
+                      <label className="tiny" style={{display:'flex', alignItems:'center', gap:6}}>
+                        <input type="checkbox" checked={plan.dwgRef.visible !== false}
+                               onChange={(e) => updateDwgRef({ visible: e.target.checked })}/>
+                        Mostrar en viewport
+                      </label>
+                      <div className="tiny">Escala</div>
+                      <input type="range" min="0.25" max="2" step="0.05"
+                             value={(plan.dwgRef.w / (plan.dwgRef.baseW || plan.dwgRef.w)).toFixed(2)}
+                             onChange={(e) => {
+                               const f = +e.target.value;
+                               const bw = plan.dwgRef.baseW || plan.dwgRef.w;
+                               const bh = plan.dwgRef.baseH || plan.dwgRef.h;
+                               updateDwgRef({ w: +(bw * f).toFixed(2), h: +(bh * f).toFixed(2) });
+                             }} />
+                      <button className="pixel-btn sm ghost" style={{justifyContent:'center'}}
+                              onClick={() => updateDwgRef({ x: +(plan.bounds.w / 2).toFixed(2), y: +(plan.bounds.h / 2).toFixed(2) })}>
+                        CENTER REF
+                      </button>
+                    </div>
+                  )}
                   <button className="pixel-btn sm ghost" style={{width:'100%', justifyContent:'center', marginTop:6}} onClick={() => showToast('Loaded template')}>≡ LOAD TEMPLATE</button>
                 </div>
 

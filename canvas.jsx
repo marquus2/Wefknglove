@@ -80,6 +80,7 @@ function FloorplanCanvas(props){
   const [hoverCoord, setHoverCoord] = useState(null);
   const [rubber, setRubber] = useState(null);
   const [connectFrom, setConnectFrom] = useState(null);
+  const [dwgActive, setDwgActive] = useState(false);
 
   const w2s = useCallback((p) => ({ x: view.x + p.x * view.scale, y: view.y + (plan.bounds.h - p.y) * view.scale }), [view, plan.bounds.h]);
   const s2w = useCallback((p) => ({ x: (p.x - view.x) / view.scale, y: plan.bounds.h - (p.y - view.y) / view.scale }), [view, plan.bounds.h]);
@@ -88,7 +89,8 @@ function FloorplanCanvas(props){
     if (!wrapRef.current) return;
     const fit = () => {
       const r = wrapRef.current.getBoundingClientRect();
-      const s = Math.max(8, Math.min((r.width - 80) / plan.bounds.w, (r.height - 80) / plan.bounds.h));
+      const fitScale = Math.min((r.width - 80) / plan.bounds.w, (r.height - 80) / plan.bounds.h);
+      const s = Math.max(8, fitScale * 0.5);
       setView({ x: (r.width - plan.bounds.w * s) / 2, y: (r.height - plan.bounds.h * s) / 2, scale: s });
     };
     fit();
@@ -108,7 +110,7 @@ function FloorplanCanvas(props){
   };
 
   const onPointerDown = (e) => {
-    if (e.target.closest('[data-node-handle]')) return;
+    if (e.target.closest('[data-node-handle]') || e.target.closest('[data-dwg-handle]')) return;
     const r = wrapRef.current.getBoundingClientRect();
     const sp = { x: e.clientX - r.left, y: e.clientY - r.top };
     const wp = s2w(sp);
@@ -202,7 +204,80 @@ function FloorplanCanvas(props){
     window.addEventListener('pointerup', up);
   };
 
+  const beginDwgDrag = useCallback((e) => {
+    const ref = plan.dwgRef;
+    if (!ref || ref.visible === false) return;
+    if (!(tool === 'select' || tool === 'edit')) return;
+    e.stopPropagation();
+    setDwgActive(true);
+    const sx = e.clientX, sy = e.clientY;
+    const start = { x: ref.x, y: ref.y };
+    const move = (ev) => {
+      const dx = (ev.clientX - sx) / view.scale;
+      const dy = -(ev.clientY - sy) / view.scale;
+      setPlan(p => {
+        if (!p.dwgRef) return p;
+        const nx = Math.max(0, Math.min(p.bounds.w, start.x + dx));
+        const ny = Math.max(0, Math.min(p.bounds.h, start.y + dy));
+        return { ...p, dwgRef: { ...p.dwgRef, x: +nx.toFixed(2), y: +ny.toFixed(2) } };
+      });
+    };
+    const up = () => {
+      setDwgActive(false);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }, [plan.dwgRef, setPlan, tool, view.scale]);
+
+  const beginDwgScale = useCallback((e) => {
+    const ref = plan.dwgRef;
+    if (!ref || ref.visible === false) return;
+    e.stopPropagation();
+    setDwgActive(true);
+    const sx = e.clientX;
+    const startW = ref.w;
+    const startH = ref.h;
+    const ratio = startH / Math.max(startW, 0.001);
+    const move = (ev) => {
+      const dx = (ev.clientX - sx) / view.scale;
+      const nextW = Math.max(2, startW + dx * 2);
+      const nextH = Math.max(2, nextW * ratio);
+      setPlan(p => p.dwgRef ? { ...p, dwgRef: { ...p.dwgRef, w: +nextW.toFixed(2), h: +nextH.toFixed(2) } } : p);
+    };
+    const up = () => {
+      setDwgActive(false);
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }, [plan.dwgRef, setPlan, view.scale]);
+
   // ── Node drag (unified mode only, middle nodes only) ─────────────────────
+
+  const beginPodDrag = useCallback((rect, podIdx, e) => {
+    if (tool !== 'edit') return;
+    e.stopPropagation();
+    const domRect = wrapRef.current.getBoundingClientRect();
+    const move = (ev) => {
+      const sp = { x: ev.clientX - domRect.left, y: ev.clientY - domRect.top };
+      const wp = s2w(sp);
+      const localX = Math.max(0, Math.min(rect.w, snap(wp.x - rect.x, grid)));
+      const localY = Math.max(0, Math.min(rect.h, snap(wp.y - rect.y, grid)));
+      setPlan(p => ({
+        ...p,
+        rects: p.rects.map(r => r.id === rect.id
+          ? { ...r, pods: (r.pods || []).map((pod, i) => i === podIdx ? { ...pod, x: localX, y: localY } : pod) }
+          : r),
+      }));
+    };
+    const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  }, [tool, s2w, grid, setPlan]);
+
   const beginNodeDrag = useCallback((connId, middleIdx, e, currentAllNodes) => {
     e.stopPropagation();
     const domRect = wrapRef.current.getBoundingClientRect();
@@ -316,6 +391,34 @@ function FloorplanCanvas(props){
             <circle key={`d${i}-${j}`} cx={l.x1} cy={l.y1 - j*grid*view.scale} r={1} fill="var(--grid-color)"/>
           );
         })}
+
+        {/* ── DWG reference layer ── */}
+        {plan.dwgRef && plan.sourceFile && plan.dwgRef.visible !== false && (() => {
+          const ref = plan.dwgRef;
+          const tl = w2s({ x: ref.x - ref.w / 2, y: ref.y + ref.h / 2 });
+          const sw = ref.w * view.scale;
+          const sh = ref.h * view.scale;
+          const br = w2s({ x: ref.x + ref.w / 2, y: ref.y - ref.h / 2 });
+          return (
+            <g>
+              <rect x={tl.x} y={tl.y} width={sw} height={sh}
+                    fill="rgba(120,170,255,0.12)"
+                    stroke={dwgActive ? 'var(--amber-deep)' : 'rgba(80,120,200,0.65)'}
+                    strokeWidth={dwgActive ? 2 : 1.2}
+                    strokeDasharray="6 4"
+                    onPointerDown={beginDwgDrag}
+                    style={{cursor:'move'}} />
+              <line x1={tl.x} y1={tl.y} x2={tl.x + sw} y2={tl.y + sh} stroke="rgba(80,120,200,0.45)" strokeDasharray="4 3"/>
+              <line x1={tl.x + sw} y1={tl.y} x2={tl.x} y2={tl.y + sh} stroke="rgba(80,120,200,0.45)" strokeDasharray="4 3"/>
+              <rect x={tl.x + 4} y={tl.y + 4} width={Math.max(80, Math.min(220, sw - 8))} height="16" fill="rgba(20,20,30,0.75)"/>
+              <text x={tl.x + 8} y={tl.y + 15} fill="#dce7ff" fontSize="10" fontFamily="'JetBrains Mono', monospace">
+                DWG · {plan.sourceFile}
+              </text>
+              <circle data-dwg-handle="1" cx={br.x} cy={br.y} r="7" fill="var(--amber)" stroke="var(--ink)" strokeWidth="1.5"
+                      style={{cursor:'nwse-resize'}} onPointerDown={beginDwgScale} />
+            </g>
+          );
+        })()}
 
         {/* ── Paths (rendered below rects) ── */}
         {layers.paths && drawnConns.map(({ conn, lanes, laneDs, from, to }) => {
@@ -436,8 +539,11 @@ function FloorplanCanvas(props){
               {r.kind === 'pod-room' && Array.isArray(r.pods) && r.pods.slice(0, 6).map((pod, idx) => {
                 const p = w2s({ x: r.x + pod.x, y: r.y + pod.y });
                 return (
-                  <g key={`${r.id}-pod-${idx}`} pointerEvents="none">
-                    <circle cx={p.x} cy={p.y} r={4} fill="var(--amber)" stroke="var(--ink)" strokeWidth="1.5" />
+                  <g key={`${r.id}-pod-${idx}`}>
+                    <circle cx={p.x} cy={p.y} r={tool === 'edit' && selected === r.id ? 6 : 4}
+                            fill="var(--amber)" stroke="var(--ink)" strokeWidth="1.5"
+                            style={{cursor: tool === 'edit' && selected === r.id ? 'grab' : 'default'}}
+                            onPointerDown={tool === 'edit' && selected === r.id ? (e) => beginPodDrag(r, idx, e) : undefined} />
                     <text x={p.x} y={p.y - 7} textAnchor="middle" fill="var(--ink-3)" fontSize="8" fontFamily="'JetBrains Mono', monospace">{idx + 1}</text>
                   </g>
                 );

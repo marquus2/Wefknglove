@@ -179,7 +179,11 @@ function App(){
     setLayers(L => ({ ...L, minimap: t.showMinimap }));
   }, [t.showMinimap]);
   useEffect(() => {
-    PathUtil.setLaneGap(t.pathGap);
+    if (typeof PathUtil?.setLaneGap === 'function') {
+      PathUtil.setLaneGap(t.pathGap);
+    } else {
+      console.warn('PathUtil.setLaneGap no está disponible; usando spacing por defecto.');
+    }
   }, [t.pathGap]);
 
   const conflicts = useMemo(() => findConflicts(plan.rects), [plan.rects]);

@@ -8,6 +8,8 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "dark": false,
   "gridStyle": "lines",
   "pathStyle": "orthogonal",
+  "pathGap": 0.1,
+  "lineWidth": 1,
   "rectStyle": "filled",
   "sidebarLayout": "left",
   "showMinimap": true
@@ -37,6 +39,7 @@ function App(){
   const [playMode, setPlayMode] = useState(false);
 
   const dwgInputRef = useRef(null);
+  const dwgApiRef = useRef(null);
 
   const rotatePlan90 = useCallback((clockwise = true) => {
     setPlanWithHistory(prev => {
@@ -114,24 +117,53 @@ function App(){
       e.target.value = '';
       return;
     }
-    setPlanWithHistory(prev => {
-      const baseW = Math.max(4, +(prev.bounds.w * 0.9).toFixed(2));
-      const baseH = Math.max(4, +(prev.bounds.h * 0.9).toFixed(2));
-      return {
-        ...prev,
-        sourceFile: file.name,
-        dwgRef: {
-          x: +(prev.bounds.w / 2).toFixed(2),
-          y: +(prev.bounds.h / 2).toFixed(2),
-          w: baseW,
-          h: baseH,
-          baseW,
-          baseH,
-          visible: true,
-        },
-      };
-    });
-    showToast(`DWG cargado: ${file.name}`);
+    const loadDwg = async () => {
+      try {
+        if (!dwgApiRef.current){
+          const [dwgPkg, svgPkg] = await Promise.all([
+            import('https://esm.sh/@mlightcad/libredwg-web@0.7.0'),
+            import('https://esm.sh/@mlightcad/libredwg-web@0.7.0/lib/svg/svgConverter.js'),
+          ]);
+          const lib = await dwgPkg.LibreDwg.create('https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@0.7.0/wasm/');
+          dwgApiRef.current = {
+            lib,
+            Dwg_File_Type: dwgPkg.Dwg_File_Type,
+            SvgConverter: svgPkg.SvgConverter,
+          };
+        }
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const { lib, Dwg_File_Type, SvgConverter } = dwgApiRef.current;
+        const dwgData = lib.dwg_read_data(bytes, Dwg_File_Type.DWG);
+        const db = lib.convert(dwgData);
+        const svgRaw = new SvgConverter().convert(db);
+        lib.dwg_free(dwgData);
+        const svgDataUri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgRaw)}`;
+
+        setPlanWithHistory(prev => {
+          const baseW = Math.max(4, +(prev.bounds.w * 0.9).toFixed(2));
+          const baseH = Math.max(4, +(prev.bounds.h * 0.9).toFixed(2));
+          return {
+            ...prev,
+            sourceFile: file.name,
+            dwgRef: {
+              x: +(prev.bounds.w / 2).toFixed(2),
+              y: +(prev.bounds.h / 2).toFixed(2),
+              w: baseW,
+              h: baseH,
+              baseW,
+              baseH,
+              visible: true,
+              svgDataUri,
+            },
+          };
+        });
+        showToast(`DWG cargado: ${file.name}`);
+      } catch (err){
+        console.error(err);
+        showToast('No se pudo renderizar el DWG');
+      }
+    };
+    loadDwg();
     e.target.value = '';
   }, []);
 
@@ -146,6 +178,9 @@ function App(){
   useEffect(() => {
     setLayers(L => ({ ...L, minimap: t.showMinimap }));
   }, [t.showMinimap]);
+  useEffect(() => {
+    PathUtil.setLaneGap(t.pathGap);
+  }, [t.pathGap]);
 
   const conflicts = useMemo(() => findConflicts(plan.rects), [plan.rects]);
 
@@ -417,6 +452,7 @@ function App(){
               selected={selected} setSelected={setSelected}
               tool={tool} setTool={setTool}
               grid={grid}
+              pathWidth={t.lineWidth}
               gridStyle={t.gridStyle} pathStyle={t.pathStyle} rectStyle={t.rectStyle}
               layers={layers} setLayers={setLayers}
               conflicts={conflicts}
@@ -498,6 +534,10 @@ function App(){
         <TweakRadio label="Path style" value={t.pathStyle}
                     options={['orthogonal','rounded','pixel']}
                     onChange={v => setTweak('pathStyle', v)} />
+        <TweakSlider label="Path distance" value={t.pathGap} min={0} max={1} step={0.05} unit="m"
+                    onChange={v => setTweak('pathGap', v)} />
+        <TweakSlider label="Line width" value={t.lineWidth} min={0.4} max={2} step={0.1} unit="x"
+                    onChange={v => setTweak('lineWidth', v)} />
         <TweakRadio label="Rect style" value={t.rectStyle}
                     options={['filled','outlined','ghosted']}
                     onChange={v => setTweak('rectStyle', v)} />
@@ -579,6 +619,7 @@ function PlayMode({ plan, step, setStep, isPlaying, setIsPlaying, speed, setSpee
               selected={currentId} setSelected={() => {}}
               tool="select" setTool={() => {}}
               grid={0.5}
+              pathWidth={1}
               gridStyle={gridStyle} pathStyle={pathStyle} rectStyle={rectStyle}
               layers={{ grid: true, rects: true, paths: true, labels: true, minimap: false }}
               setLayers={() => {}}

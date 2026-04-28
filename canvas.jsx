@@ -69,6 +69,7 @@ function FloorplanCanvas(props){
     plan, setPlan,
     selected, setSelected,
     tool, setTool,
+    pathWidth = 1,
     grid, gridStyle, pathStyle, rectStyle,
     layers, conflicts,
     isPlaying, playStep,
@@ -337,7 +338,7 @@ function FloorplanCanvas(props){
   }, [plan.connections, plan.rects, view, pathStyle]);
 
   // 1m width in screen pixels
-  const laneW = view.scale * PathUtil.LANE_WIDTH;
+  const laneW = view.scale * PathUtil.LANE_WIDTH * pathWidth;
 
   // ── Color helpers ─────────────────────────────────────────────────────────
   const rectFillFor = (r, isSel, isConflict) => {
@@ -408,6 +409,15 @@ function FloorplanCanvas(props){
                     strokeDasharray="6 4"
                     onPointerDown={beginDwgDrag}
                     style={{cursor:'move'}} />
+              {ref.svgDataUri && (
+                <image href={ref.svgDataUri}
+                       x={tl.x} y={tl.y}
+                       width={sw} height={sh}
+                       preserveAspectRatio="none"
+                       opacity="0.95"
+                       onPointerDown={beginDwgDrag}
+                       style={{cursor:'move'}} />
+              )}
               <line x1={tl.x} y1={tl.y} x2={tl.x + sw} y2={tl.y + sh} stroke="rgba(80,120,200,0.45)" strokeDasharray="4 3"/>
               <line x1={tl.x + sw} y1={tl.y} x2={tl.x} y2={tl.y + sh} stroke="rgba(80,120,200,0.45)" strokeDasharray="4 3"/>
               <rect x={tl.x + 4} y={tl.y + 4} width={Math.max(80, Math.min(220, sw - 8))} height="16" fill="rgba(20,20,30,0.75)"/>

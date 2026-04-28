@@ -107,18 +107,10 @@ function App(){
     }));
   }, [grid]);
 
-  const onPickDwg = useCallback(() => {
-    if (!dwgInputRef.current) return;
-    dwgInputRef.current.value = '';
-    dwgInputRef.current.click();
-  }, []);
-
-  const onDwgSelected = useCallback((e) => {
-    const file = e.target.files?.[0];
+  const processDwgFile = useCallback((file) => {
     if (!file) return;
     if (!file.name.toLowerCase().endsWith('.dwg')) {
       showToast('Archivo inválido · elegí un .dwg');
-      e.target.value = '';
       return;
     }
     const loadDwg = async () => {
@@ -168,8 +160,36 @@ function App(){
       }
     };
     loadDwg();
-    e.target.value = '';
   }, []);
+
+  const onPickDwg = useCallback(async () => {
+    try {
+      if (window.showOpenFilePicker) {
+        const [handle] = await window.showOpenFilePicker({
+          multiple: false,
+          types: [{ description: 'DWG files', accept: { 'application/acad': ['.dwg'] } }],
+        });
+        const file = await handle.getFile();
+        processDwgFile(file);
+        return;
+      }
+    } catch (err){
+      if (err?.name !== 'AbortError') console.warn(err);
+      return;
+    }
+    if (!dwgInputRef.current) {
+      showToast('No se pudo abrir el selector de archivos');
+      return;
+    }
+    dwgInputRef.current.value = '';
+    dwgInputRef.current.click();
+  }, [processDwgFile]);
+
+  const onDwgSelected = useCallback((e) => {
+    const file = e.target.files?.[0];
+    processDwgFile(file);
+    e.target.value = '';
+  }, [processDwgFile]);
 
   const updateDwgRef = useCallback((patch) => {
     setPlanWithHistory(prev => {

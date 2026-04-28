@@ -163,6 +163,7 @@ function App(){
   }, []);
 
   const onPickDwg = useCallback(async () => {
+    let shouldFallbackToInput = true;
     try {
       if (window.showOpenFilePicker) {
         const [handle] = await window.showOpenFilePicker({
@@ -171,12 +172,14 @@ function App(){
         });
         const file = await handle.getFile();
         processDwgFile(file);
+        shouldFallbackToInput = false;
         return;
       }
     } catch (err){
-      if (err?.name !== 'AbortError') console.warn(err);
-      return;
+      if (err?.name === 'AbortError') return;
+      console.warn('showOpenFilePicker falló, usando input fallback', err);
     }
+    if (!shouldFallbackToInput) return;
     if (!dwgInputRef.current) {
       showToast('No se pudo abrir el selector de archivos');
       return;

@@ -21,7 +21,7 @@ function SceneList({ plan, selected, setSelected, conflicts }){
   );
 }
 
-function Inspector({ plan, setPlan, selected, selectedConn, setSelectedConn, onAutoRoute, onDelete, conflicts }){
+function Inspector({ plan, setPlan, selected, selectedConn, setSelectedConn, onAutoRoute, onDelete, onRotateRectCW, onRotateRectCCW, onRotatePlanCW, onRotatePlanCCW, conflicts }){
   const [tab, setTab] = useState('props');
   const rect = plan.rects.find(r => r.id === selected);
   const conn = plan.connections.find(c => c.id === selectedConn);
@@ -160,6 +160,16 @@ function Inspector({ plan, setPlan, selected, selectedConn, setSelectedConn, onA
             </div>
           )}
 
+          <div className="divider"/>
+          <div className="label">Rotate</div>
+          <div className="row gap-12" style={{marginBottom:8}}>
+            <button className="pixel-btn sm" onClick={onRotateRectCCW}>↺ ROOM</button>
+            <button className="pixel-btn sm" onClick={onRotateRectCW}>↻ ROOM</button>
+          </div>
+          <div className="row gap-12" style={{marginBottom:8}}>
+            <button className="pixel-btn sm ghost" onClick={onRotatePlanCCW}>↺ FLOORPLAN</button>
+            <button className="pixel-btn sm ghost" onClick={onRotatePlanCW}>↻ FLOORPLAN</button>
+          </div>
           <div className="divider"/>
           <div className="label">Connections from this scene</div>
           {plan.connections.filter(c => c.from === rect.id || c.to === rect.id).map(c => {

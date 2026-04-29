@@ -116,22 +116,19 @@ function App(){
     const loadDwg = async () => {
       try {
         if (!dwgApiRef.current){
-          const [dwgPkg, svgPkg] = await Promise.all([
-            import('https://esm.sh/@mlightcad/libredwg-web@0.7.0'),
-            import('https://esm.sh/@mlightcad/libredwg-web@0.7.0/lib/svg/svgConverter.js'),
-          ]);
+          const dwgPkg = await import('https://esm.sh/@mlightcad/libredwg-web@0.7.0');
           const lib = await dwgPkg.LibreDwg.create('https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@0.7.0/wasm/');
           dwgApiRef.current = {
             lib,
             Dwg_File_Type: dwgPkg.Dwg_File_Type,
-            SvgConverter: svgPkg.SvgConverter,
           };
         }
         const bytes = new Uint8Array(await file.arrayBuffer());
-        const { lib, Dwg_File_Type, SvgConverter } = dwgApiRef.current;
+        const { lib, Dwg_File_Type } = dwgApiRef.current;
         const dwgData = lib.dwg_read_data(bytes, Dwg_File_Type.DWG);
         const db = lib.convert(dwgData);
-        const svgRaw = new SvgConverter().convert(db);
+        const svgRaw = lib.dwg_to_svg(db);
+        if (!svgRaw || !svgRaw.includes('<svg')) throw new Error('Conversión DWG→SVG devolvió contenido vacío');
         lib.dwg_free(dwgData);
         const svgDataUri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgRaw)}`;
 
@@ -156,7 +153,7 @@ function App(){
         showToast(`DWG cargado: ${file.name}`);
       } catch (err){
         console.error(err);
-        showToast('No se pudo renderizar el DWG');
+        showToast(`No se pudo renderizar el DWG${err?.message ? `: ${err.message}` : ''}`);
       }
     };
     loadDwg();

@@ -40,6 +40,7 @@ function App(){
 
   const dwgInputRef = useRef(null);
   const dwgApiRef = useRef(null);
+  const dwgLoaderRef = useRef(null);
 
   const rotatePlan90 = useCallback((clockwise = true) => {
     setPlanWithHistory(prev => {
@@ -116,7 +117,23 @@ function App(){
     const loadDwg = async () => {
       try {
         if (!dwgApiRef.current){
-          const dwgPkg = await import('https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@0.7.0/dist/libredwg-web.js');
+          if (!dwgLoaderRef.current){
+            dwgLoaderRef.current = new Promise((resolve, reject) => {
+              const script = document.createElement('script');
+              script.src = 'https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@0.7.0/dist/libredwg-web.js';
+              script.async = true;
+              script.onload = () => {
+                const direct = window.libredwgWeb || window.libredwgweb || window.LibreDwgWeb;
+                if (direct?.LibreDwg && direct?.Dwg_File_Type) return resolve(direct);
+                const maybe = Object.values(window).find(v => v && typeof v === 'object' && v.LibreDwg && v.Dwg_File_Type);
+                if (maybe) return resolve(maybe);
+                reject(new Error('Could not initialize libredwg runtime from CDN script'));
+              };
+              script.onerror = () => reject(new Error('Failed to load libredwg runtime script'));
+              document.head.appendChild(script);
+            });
+          }
+          const dwgPkg = await dwgLoaderRef.current;
           const lib = await dwgPkg.LibreDwg.create('https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@0.7.0/wasm/');
           dwgApiRef.current = {
             lib,

@@ -116,7 +116,7 @@ function App(){
     const loadDwg = async () => {
       try {
         if (!dwgApiRef.current){
-          const dwgPkg = await import('https://esm.sh/@mlightcad/libredwg-web@0.7.0?bundle');
+          const dwgPkg = await import('https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@0.7.0/dist/libredwg-web.js');
           const lib = await dwgPkg.LibreDwg.create('https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@0.7.0/wasm/');
           dwgApiRef.current = {
             lib,

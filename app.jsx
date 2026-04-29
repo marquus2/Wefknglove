@@ -118,20 +118,13 @@ function App(){
       try {
         if (!dwgApiRef.current){
           if (!dwgLoaderRef.current){
-            dwgLoaderRef.current = new Promise((resolve, reject) => {
-              const script = document.createElement('script');
-              script.src = 'https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@0.7.0/dist/libredwg-web.js';
-              script.async = true;
-              script.onload = () => {
-                const direct = window.libredwgWeb || window.libredwgweb || window.LibreDwgWeb;
-                if (direct?.LibreDwg && direct?.Dwg_File_Type) return resolve(direct);
-                const maybe = Object.values(window).find(v => v && typeof v === 'object' && v.LibreDwg && v.Dwg_File_Type);
-                if (maybe) return resolve(maybe);
-                reject(new Error('Could not initialize libredwg runtime from CDN script'));
-              };
-              script.onerror = () => reject(new Error('Failed to load libredwg runtime script'));
-              document.head.appendChild(script);
-            });
+            dwgLoaderRef.current = (async () => {
+              const fromModuleBoot = await window.__libredwgPromise;
+              if (fromModuleBoot?.LibreDwg && fromModuleBoot?.Dwg_File_Type) return fromModuleBoot;
+              const maybe = Object.values(window).find(v => v && typeof v === 'object' && v.LibreDwg && v.Dwg_File_Type);
+              if (maybe) return maybe;
+              throw new Error('Could not initialize libredwg runtime module');
+            })();
           }
           const dwgPkg = await dwgLoaderRef.current;
           const lib = await dwgPkg.LibreDwg.create('https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@0.7.0/wasm/');

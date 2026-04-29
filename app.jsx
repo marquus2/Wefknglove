@@ -110,13 +110,13 @@ function App(){
   const processDwgFile = useCallback((file) => {
     if (!file) return;
     if (!file.name.toLowerCase().endsWith('.dwg')) {
-      showToast('Archivo inválido · elegí un .dwg');
+      showToast('Invalid file · choose a .dwg');
       return;
     }
     const loadDwg = async () => {
       try {
         if (!dwgApiRef.current){
-          const dwgPkg = await import('https://esm.sh/@mlightcad/libredwg-web@0.7.0');
+          const dwgPkg = await import('https://esm.sh/@mlightcad/libredwg-web@0.7.0?bundle');
           const lib = await dwgPkg.LibreDwg.create('https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@0.7.0/wasm/');
           dwgApiRef.current = {
             lib,
@@ -128,7 +128,7 @@ function App(){
         const dwgData = lib.dwg_read_data(bytes, Dwg_File_Type.DWG);
         const db = lib.convert(dwgData);
         const svgRaw = lib.dwg_to_svg(db);
-        if (!svgRaw || !svgRaw.includes('<svg')) throw new Error('Conversión DWG→SVG devolvió contenido vacío');
+        if (!svgRaw || !svgRaw.includes('<svg')) throw new Error('DWG→SVG conversion returned empty content');
         lib.dwg_free(dwgData);
         const svgDataUri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgRaw)}`;
 
@@ -150,10 +150,10 @@ function App(){
             },
           };
         });
-        showToast(`DWG cargado: ${file.name}`);
+        showToast(`DWG loaded: ${file.name}`);
       } catch (err){
         console.error(err);
-        showToast(`No se pudo renderizar el DWG${err?.message ? `: ${err.message}` : ''}`);
+        showToast(`Failed to import DWG${err?.message ? `: ${err.message}` : ''}`);
       }
     };
     loadDwg();
@@ -174,11 +174,11 @@ function App(){
       }
     } catch (err){
       if (err?.name === 'AbortError') return;
-      console.warn('showOpenFilePicker falló, usando input fallback', err);
+      console.warn('showOpenFilePicker failed, using input fallback', err);
     }
     if (!shouldFallbackToInput) return;
     if (!dwgInputRef.current) {
-      showToast('No se pudo abrir el selector de archivos');
+      showToast('Could not open file picker');
       return;
     }
     dwgInputRef.current.value = '';
@@ -206,7 +206,7 @@ function App(){
     if (typeof PathUtil?.setLaneGap === 'function') {
       PathUtil.setLaneGap(t.pathGap);
     } else {
-      console.warn('PathUtil.setLaneGap no está disponible; usando spacing por defecto.');
+      console.warn('PathUtil.setLaneGap is not available; using default spacing.');
     }
   }, [t.pathGap]);
 
@@ -409,9 +409,9 @@ function App(){
                       <label className="tiny" style={{display:'flex', alignItems:'center', gap:6}}>
                         <input type="checkbox" checked={plan.dwgRef.visible !== false}
                                onChange={(e) => updateDwgRef({ visible: e.target.checked })}/>
-                        Mostrar en viewport
+                        Show in viewport
                       </label>
-                      <div className="tiny">Escala</div>
+                      <div className="tiny">Scale</div>
                       <input type="range" min="0.25" max="2" step="0.05"
                              value={(plan.dwgRef.w / (plan.dwgRef.baseW || plan.dwgRef.w)).toFixed(2)}
                              onChange={(e) => {

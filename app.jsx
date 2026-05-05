@@ -40,6 +40,7 @@ function App(){
 
   const dwgInputRef = useRef(null);
   const dwgApiRef = useRef(null);
+  const dwgLoaderRef = useRef(null);
 
   const rotatePlan90 = useCallback((clockwise = true) => {
     setPlanWithHistory(prev => {
@@ -128,7 +129,7 @@ function App(){
         const dwgData = lib.dwg_read_data(bytes, Dwg_File_Type.DWG);
         const db = lib.convert(dwgData);
         const svgRaw = lib.dwg_to_svg(db);
-        if (!svgRaw || !svgRaw.includes('<svg')) throw new Error('Conversión DWG→SVG devolvió contenido vacío');
+        if (!svgRaw || !svgRaw.includes('<svg')) throw new Error('DWG→SVG conversion returned empty content');
         lib.dwg_free(dwgData);
         const svgDataUri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgRaw)}`;
 

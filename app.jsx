@@ -117,16 +117,7 @@ function App(){
     const loadDwg = async () => {
       try {
         if (!dwgApiRef.current){
-          if (!dwgLoaderRef.current){
-            dwgLoaderRef.current = (async () => {
-              const fromModuleBoot = await window.__libredwgPromise;
-              if (fromModuleBoot?.LibreDwg && fromModuleBoot?.Dwg_File_Type) return fromModuleBoot;
-              const maybe = Object.values(window).find(v => v && typeof v === 'object' && v.LibreDwg && v.Dwg_File_Type);
-              if (maybe) return maybe;
-              throw new Error('Could not initialize libredwg runtime module');
-            })();
-          }
-          const dwgPkg = await dwgLoaderRef.current;
+          const dwgPkg = await import('https://esm.sh/@mlightcad/libredwg-web@0.7.0?bundle');
           const lib = await dwgPkg.LibreDwg.create('https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@0.7.0/wasm/');
           dwgApiRef.current = {
             lib,
@@ -163,7 +154,7 @@ function App(){
         showToast(`DWG loaded: ${file.name}`);
       } catch (err){
         console.error(err);
-        showToast(`Failed to import DWG${err?.message ? `: ${err.message}` : ''}`);
+        showToast(`Failed to render DWG${err?.message ? `: ${err.message}` : ''}`);
       }
     };
     loadDwg();

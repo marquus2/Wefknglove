@@ -15,32 +15,50 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "showMinimap": true
 }/*EDITMODE-END*/;
 
+// DWG unit → meters conversion factors
+const APP_NAME = 'SAMBO';
+const APP_VERSION = 'v0.4.2E';
+const DWG_UNIT_SCALE = { mm: 0.001, cm: 0.01, inch: 0.0254, m: 1 };
+
 function App(){
   const [t, setTweak] = useTweaks(TWEAK_DEFAULTS);
   const [route, setRoute] = useState('dashboard'); // dashboard | editor | export
-  const [activeProjectId, setActiveProjectId] = useState('galeria-moderna');
-  const [activeAdaptId, setActiveAdaptId] = useState('venue-soho');
+  const [activeProjectId, setActiveProjectId] = useState('blackmirror');
+  const [activeAdaptId, setActiveAdaptId] = useState('bm-madrid');
   const [query, setQuery] = useState('');
 
   // Editor state
-  const [plan, setPlan] = useState(() => JSON.parse(JSON.stringify(SAMPLE.FLOORPLAN)));
+  const getFloorplanForAdapt = useCallback((id) => (
+    (SAMPLE.FLOORPLANS && SAMPLE.FLOORPLANS[id]) ? SAMPLE.FLOORPLANS[id] : SAMPLE.FLOORPLAN
+  ), []);
+  const [plan, setPlan] = useState(() => JSON.parse(JSON.stringify(getFloorplanForAdapt('bm-madrid'))));
   const [tool, setTool] = useState('select');
   const [grid, setGrid] = useState(0.5);
-  const [selected, setSelected] = useState('s04');
+  const [selected, setSelected] = useState('bm000');
   const [selectedConn, setSelectedConn] = useState(null);
   const [layers, setLayers] = useState({ grid: true, rects: true, paths: true, labels: true, minimap: true });
   const [history, setHistory] = useState([]);
   const [future, setFuture] = useState([]);
   const [toast, setToast] = useState(null);
   const [showCreator, setShowCreator] = useState(false);
+  const [showTemplateLoad, setShowTemplateLoad] = useState(false);
+  const [showTemplateSave, setShowTemplateSave] = useState(false);
+  const [templates, setTemplates] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('wefknglove_templates') || '[]'); }
+    catch { return []; }
+  });
   const [isPlaying, setIsPlaying] = useState(false);
   const [playStep, setPlayStep] = useState(0);
   const [playSpeed, setPlaySpeed] = useState(1);
   const [playMode, setPlayMode] = useState(false);
+  const [showAbout, setShowAbout] = useState(false);
 
   const dwgInputRef = useRef(null);
   const dwgApiRef = useRef(null);
   const dwgLoaderRef = useRef(null);
+  const [dwgUnit, setDwgUnit] = useState('mm'); // mm | cm | inch | m
+  const dwgUnitRef = useRef(dwgUnit);
+  useEffect(() => { dwgUnitRef.current = dwgUnit; }, [dwgUnit]);
 
   const rotatePlan90 = useCallback((clockwise = true) => {
     setPlanWithHistory(prev => {
@@ -58,8 +76,14 @@ function App(){
         ].map(rotatePoint);
         const xs = corners.map(c => c.x);
         const ys = corners.map(c => c.y);
+        // dir: CW rotation → subtract 90°; CCW → add 90°
+        const oldDir = r.dir || 0;
+        const newDir = clockwise
+          ? (oldDir - 90 + 360) % 360
+          : (oldDir + 90) % 360;
         return {
           ...r,
+          dir: newDir,
           x: Math.min(...xs),
           y: Math.min(...ys),
           w: Math.max(...xs) - Math.min(...xs),
@@ -79,6 +103,7 @@ function App(){
           ...c,
           customMiddleNodes: c.customMiddleNodes?.map(rotatePoint) || null,
         })),
+        // dwgRef intentionally NOT rotated — stays fixed as background reference
       };
     });
   }, []);
@@ -92,8 +117,11 @@ function App(){
         const centerY = r.y + r.h / 2;
         const nextW = r.h;
         const nextH = r.w;
+        const oldDir = r.dir || 0;
+        const newDir = clockwise ? (oldDir - 90 + 360) % 360 : (oldDir + 90) % 360;
         return {
           ...r,
+          dir: newDir,
           x: Math.max(0, Math.min(prev.bounds.w - nextW, snap(centerX - nextW / 2, grid))),
           y: Math.max(0, Math.min(prev.bounds.h - nextH, snap(centerY - nextH / 2, grid))),
           w: nextW,
@@ -116,45 +144,98 @@ function App(){
     }
     const loadDwg = async () => {
       try {
-        if (!dwgApiRef.current){
-          const dwgPkg = await import('https://esm.sh/@mlightcad/libredwg-web@0.7.0?bundle');
-          const lib = await dwgPkg.LibreDwg.create('https://cdn.jsdelivr.net/npm/@mlightcad/libredwg-web@0.7.0/wasm/');
-          dwgApiRef.current = {
-            lib,
-            Dwg_File_Type: dwgPkg.Dwg_File_Type,
-          };
+        // Load/cache the DWG package (JS module only downloaded once)
+        if (!dwgLoaderRef.current){
+          dwgLoaderRef.current = (async () => {
+            const fromModuleBoot = await window.__libredwgPromise;
+            if (fromModuleBoot?.LibreDwg && fromModuleBoot?.Dwg_File_Type) return fromModuleBoot;
+            const maybe = Object.values(window).find(v => v && typeof v === 'object' && v.LibreDwg && v.Dwg_File_Type);
+            if (maybe) return maybe;
+            throw new Error('Could not initialize libredwg runtime module');
+          })();
         }
+        const dwgPkg = await dwgLoaderRef.current;
+
+        // Create a fresh WASM instance for every load to avoid heap pollution.
+        // LibreDwg.instance is a static singleton — we reset it so create()
+        // calls createModule() fresh each time.
+        try { dwgPkg.LibreDwg.instance = null; } catch(_) {}
+        const lib = await dwgPkg.LibreDwg.create();
+        const Dwg_File_Type = dwgPkg.Dwg_File_Type;
+
         const bytes = new Uint8Array(await file.arrayBuffer());
-        const { lib, Dwg_File_Type } = dwgApiRef.current;
         const dwgData = lib.dwg_read_data(bytes, Dwg_File_Type.DWG);
         const db = lib.convert(dwgData);
         const svgRaw = lib.dwg_to_svg(db);
+        console.log('[DWG] svgRaw length:', svgRaw?.length);
         if (!svgRaw || !svgRaw.includes('<svg')) throw new Error('DWG→SVG conversion returned empty content');
-        lib.dwg_free(dwgData);
-        const svgDataUri = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgRaw)}`;
+        // Note: intentionally not calling lib.dwg_free(dwgData) here —
+        // it corrupts the Emscripten heap singleton and breaks subsequent loads.
 
-        setPlanWithHistory(prev => {
-          const baseW = Math.max(4, +(prev.bounds.w * 0.9).toFixed(2));
-          const baseH = Math.max(4, +(prev.bounds.h * 0.9).toFixed(2));
+        // Parse viewBox to get real-world DWG dimensions
+        const vbMatch = svgRaw.match(/viewBox="([^"]+)"/);
+        let dwgW = null, dwgH = null;
+        if (vbMatch) {
+          const parts = vbMatch[1].trim().split(/[\s,]+/).map(Number);
+          if (parts.length >= 4 && !parts.some(isNaN)) {
+            const scale = DWG_UNIT_SCALE[dwgUnitRef.current] || 0.001;
+            dwgW = +(Math.abs(parts[2]) * scale).toFixed(3); // viewBox width → meters
+            dwgH = +(Math.abs(parts[3]) * scale).toFixed(3); // viewBox height → meters
+            console.log(`[DWG] viewBox → ${parts[2].toFixed(1)} × ${parts[3].toFixed(1)} ${dwgUnitRef.current} = ${dwgW}m × ${dwgH}m`);
+          }
+        }
+
+        // Post-process SVG for dangerouslySetInnerHTML injection.
+        // The HTML parser does NOT accept XML declarations or DOCTYPEs — strip them first.
+        // Then overwrite width/height/preserveAspectRatio so the SVG fills the container.
+        let svgString = svgRaw
+          .replace(/^[\s\S]*?(<svg[\s>])/i, '$1')  // strip everything before <svg (XML decl, DOCTYPE, comments)
+          .replace(/<svg([^>]*)>/i, (match, attrs) => {
+            const cleanAttrs = attrs
+              .replace(/\s+width="[^"]*"/g, '')
+              .replace(/\s+height="[^"]*"/g, '')
+              .replace(/\s+preserveAspectRatio="[^"]*"/g, '');
+            return `<svg${cleanAttrs} width="100%" height="100%" preserveAspectRatio="xMidYMid meet" style="display:block">`;
+          })
+          // Strip libredwg solid black background rectangles (replace fill with none)
+          .replace(/(<rect\b[^>]*?)fill\s*=\s*["'](?:#0{3,8}|black|#0d0d0d|#121[0-9a-f]{3})["']/gi,
+            '$1fill="none"')
+          .replace(/(<rect\b[^>]*?style\s*=\s*["'][^"']*?)(?:fill|background)\s*:\s*(?:#0{3,8}|black|#0d0d0d|#121[0-9a-f]{3})/gi,
+            '$1fill:none');
+
+        // Use setPlan (not history) so large SVG strings don't bloat the undo stack
+        setPlan(prev => {
+          // Use real-world dimensions if parsed, otherwise fall back to 90% of bounds
+          const baseW = dwgW && dwgW > 0.5 ? dwgW : Math.max(4, +(prev.bounds.w * 0.9).toFixed(2));
+          const baseH = dwgH && dwgH > 0.5 ? dwgH : Math.max(4, +(prev.bounds.h * 0.9).toFixed(2));
+
+          // Expand bounds to fit the DWG (with 20% margin), rounded up to nearest meter
+          const PAD = 1.2;
+          const newBoundsW = Math.ceil(Math.max(prev.bounds.w, baseW * PAD));
+          const newBoundsH = Math.ceil(Math.max(prev.bounds.h, baseH * PAD));
+
           return {
             ...prev,
+            bounds: { w: newBoundsW, h: newBoundsH },
             sourceFile: file.name,
             dwgRef: {
-              x: +(prev.bounds.w / 2).toFixed(2),
-              y: +(prev.bounds.h / 2).toFixed(2),
+              x: +(newBoundsW / 2).toFixed(2),
+              y: +(newBoundsH / 2).toFixed(2),
               w: baseW,
               h: baseH,
-              baseW,
-              baseH,
+              vbW: vbMatch ? Math.abs(+vbMatch[1].trim().split(/[\s,]+/)[2]) : null,
+              vbH: vbMatch ? Math.abs(+vbMatch[1].trim().split(/[\s,]+/)[3]) : null,
               visible: true,
-              svgDataUri,
+              opacity: 0.85,
+              svgString,
             },
           };
         });
-        showToast(`DWG loaded: ${file.name}`);
+        const dims = dwgW ? ` · ${dwgW}m × ${dwgH}m` : '';
+        showToast(`DWG loaded: ${file.name}${dims}`);
       } catch (err){
         console.error(err);
-        showToast(`Failed to render DWG${err?.message ? `: ${err.message}` : ''}`);
+        showToast(`Failed to import DWG${err?.message ? `: ${err.message}` : ''}`);
       }
     };
     loadDwg();
@@ -198,6 +279,32 @@ function App(){
       return { ...prev, dwgRef: { ...prev.dwgRef, ...patch } };
     });
   }, []);
+
+  const removeDwg = useCallback(() => {
+    setPlan(prev => ({ ...prev, sourceFile: null, dwgRef: null }));
+  }, []);
+
+  // When unit changes and a DWG is loaded, recalculate its real-world dimensions
+  useEffect(() => {
+    setPlan(prev => {
+      const ref = prev.dwgRef;
+      if (!ref || ref.vbW == null || ref.vbH == null) return prev;
+      const scale = DWG_UNIT_SCALE[dwgUnit] || 0.001;
+      const newW = +(ref.vbW * scale).toFixed(3);
+      const newH = +(ref.vbH * scale).toFixed(3);
+      if (newW < 0.1 || newH < 0.1) return prev;
+      const PAD = 1.2;
+      const newBoundsW = Math.ceil(Math.max(prev.bounds.w, newW * PAD));
+      const newBoundsH = Math.ceil(Math.max(prev.bounds.h, newH * PAD));
+      return {
+        ...prev,
+        bounds: { w: newBoundsW, h: newBoundsH },
+        dwgRef: { ...ref, w: newW, h: newH,
+                  x: +(newBoundsW / 2).toFixed(2),
+                  y: +(newBoundsH / 2).toFixed(2) },
+      };
+    });
+  }, [dwgUnit]);
 
   useEffect(() => { document.documentElement.dataset.theme = t.dark ? 'dark' : 'light'; }, [t.dark]);
   useEffect(() => {
@@ -291,6 +398,37 @@ function App(){
     showToast('Rect deleted');
   };
 
+  // ── Template persistence (localStorage) ────────────────────────────────────
+  const onSaveTemplate = (name) => {
+    const planCopy = JSON.parse(JSON.stringify(plan));
+    // Strip heavy SVG string from DWG ref — templates are for layout, not the DWG image
+    if (planCopy.dwgRef) delete planCopy.dwgRef.svgString;
+    const newTpl = {
+      id: 'tpl-' + Date.now(),
+      name: name.trim(),
+      projectId: activeProjectId,
+      adaptId: activeAdaptId,
+      date: new Date().toISOString(),
+      plan: planCopy,
+    };
+    const next = [newTpl, ...templates].slice(0, 60); // keep max 60 templates
+    setTemplates(next);
+    localStorage.setItem('wefknglove_templates', JSON.stringify(next));
+    showToast(`Template "${name}" saved`);
+  };
+
+  const onDeleteTemplate = (id) => {
+    const next = templates.filter(t => t.id !== id);
+    setTemplates(next);
+    localStorage.setItem('wefknglove_templates', JSON.stringify(next));
+  };
+
+  const onLoadTemplate = (tpl) => {
+    setPlanWithHistory(JSON.parse(JSON.stringify(tpl.plan)));
+    setSelected(null); setSelectedConn(null);
+    showToast(`Loaded "${tpl.name}"`);
+  };
+
   // Play mode tick
   useEffect(() => {
     if (!isPlaying) return;
@@ -310,13 +448,9 @@ function App(){
   // ── Topbar ──
   const Topbar = (
     <div className="topbar">
-      <div className="brand">
-        <div className="brand-mark" />
-        <div>
-          <div className="brand-name">WEFKG·NLOVE</div>
-          <div className="brand-sub">FLOORPLAN EDITOR · v0.4.2</div>
-        </div>
-      </div>
+      <button className="brand brand-button" onClick={() => setShowAbout(true)} title="About SAMBO">
+        <img className="brand-logo" src="assets/sambo_logo.svg" alt="SAMBO" />
+      </button>
       <div className="topnav">
         <a className={route === 'dashboard' ? 'active' : ''} onClick={() => setRoute('dashboard')}>Projects</a>
         <a className={route === 'editor' ? 'active' : ''} onClick={() => setRoute('editor')}>Editor</a>
@@ -346,6 +480,51 @@ function App(){
     </div>
   );
 
+  const adjustGridToContent = useCallback(() => {
+    const MARGIN = 3;
+    setPlanWithHistory(prev => {
+      const measuredRects = prev.rects.filter(r => r.kind !== 'alternate-content');
+      const xs = measuredRects.flatMap(r => [r.x, r.x + r.w]);
+      const ys = measuredRects.flatMap(r => [r.y, r.y + r.h]);
+      if (prev.dwgRef && prev.dwgRef.visible !== false) {
+        xs.push(prev.dwgRef.x - prev.dwgRef.w / 2, prev.dwgRef.x + prev.dwgRef.w / 2);
+        ys.push(prev.dwgRef.y - prev.dwgRef.h / 2, prev.dwgRef.y + prev.dwgRef.h / 2);
+      }
+      if (!xs.length || !ys.length) return prev;
+
+      const minX = Math.floor(Math.min(...xs) - MARGIN);
+      const minY = Math.floor(Math.min(...ys) - MARGIN);
+      const maxX = Math.ceil(Math.max(...xs) + MARGIN);
+      const maxY = Math.ceil(Math.max(...ys) + MARGIN);
+      const dx = -minX;
+      const dy = -minY;
+      const movePoint = pt => pt ? ({ ...pt, x: +(pt.x + dx).toFixed(2), y: +(pt.y + dy).toFixed(2) }) : pt;
+      const moveRoute = route => ({
+        ...route,
+        customMiddleNodes: Array.isArray(route.customMiddleNodes) ? route.customMiddleNodes.map(movePoint) : route.customMiddleNodes,
+        customLaneMiddleNodes: Array.isArray(route.customLaneMiddleNodes)
+          ? route.customLaneMiddleNodes.map(nodes => Array.isArray(nodes) ? nodes.map(movePoint) : nodes)
+          : route.customLaneMiddleNodes,
+      });
+
+      return {
+        ...prev,
+        bounds: { w: Math.max(1, maxX - minX), h: Math.max(1, maxY - minY) },
+        rects: prev.rects.map(r => ({
+          ...r,
+          x: +(r.x + dx).toFixed(2),
+          y: +(r.y + dy).toFixed(2),
+          customRoutes: r.customRoutes
+            ? Object.fromEntries(Object.entries(r.customRoutes).map(([key, route]) => [key, moveRoute(route)]))
+            : r.customRoutes,
+        })),
+        connections: prev.connections.map(c => moveRoute(c)),
+        dwgRef: prev.dwgRef ? { ...prev.dwgRef, x: +(prev.dwgRef.x + dx).toFixed(2), y: +(prev.dwgRef.y + dy).toFixed(2) } : prev.dwgRef,
+      };
+    });
+    showToast('Grid adjusted to content');
+  }, [setPlanWithHistory]);
+
   return (
     <div className="app">
       {Topbar}
@@ -361,7 +540,14 @@ function App(){
           <div className="dash-main scroll-y">
             <HeroDashboard project={project}
                            adaptations={adaptations}
-                           onOpenAdapt={(id) => { setActiveAdaptId(id); setRoute('editor'); }}
+                           onOpenAdapt={(id) => {
+                             setActiveAdaptId(id);
+                             const fp = getFloorplanForAdapt(id);
+                             setPlan(JSON.parse(JSON.stringify(fp)));
+                             setHistory([]); setFuture([]);
+                             setSelected(null); setSelectedConn(null);
+                             setRoute('editor');
+                           }}
                            onNewAdapt={() => showToast('New adaptation flow')}
                            onCreateRect={() => { setRoute('editor'); setShowCreator(true); }}/>
           </div>
@@ -401,33 +587,50 @@ function App(){
 
                 <div className="tool-group">
                   <h4>Plan source</h4>
+                  <div className="row gap-12" style={{marginBottom:6}}>
+                    <span className="tiny" style={{lineHeight:'24px', whiteSpace:'nowrap'}}>DWG units</span>
+                    <select className="pixel-input sm" style={{flex:1, fontSize:11}}
+                            value={dwgUnit} onChange={e => setDwgUnit(e.target.value)}>
+                      <option value="mm">mm (millimeters)</option>
+                      <option value="cm">cm (centimeters)</option>
+                      <option value="inch">inches</option>
+                      <option value="m">m (meters)</option>
+                    </select>
+                  </div>
                   <button className="pixel-btn sm" style={{width:'100%', justifyContent:'center'}} onClick={onPickDwg}>↥ IMPORT .DWG</button>
                   <input ref={dwgInputRef} id="dwg-input" type="file" accept=".dwg" onChange={onDwgSelected}
                          style={{position:'absolute', left:'-99999px', width:1, height:1, opacity:0, pointerEvents:'none'}} />
                   {plan.sourceFile && plan.dwgRef && (
                     <div className="pixel-inset" style={{marginTop:6, padding:6, display:'flex', flexDirection:'column', gap:6}}>
                       <div className="tiny" style={{wordBreak:'break-word'}}>REF: {plan.sourceFile}</div>
+                      <div className="tiny" style={{opacity:0.7}}>
+                        {plan.dwgRef.w.toFixed(2)}m × {plan.dwgRef.h.toFixed(2)}m
+                      </div>
                       <label className="tiny" style={{display:'flex', alignItems:'center', gap:6}}>
                         <input type="checkbox" checked={plan.dwgRef.visible !== false}
                                onChange={(e) => updateDwgRef({ visible: e.target.checked })}/>
-                        Show in viewport
+                        Show
                       </label>
-                      <div className="tiny">Scale</div>
-                      <input type="range" min="0.25" max="2" step="0.05"
-                             value={(plan.dwgRef.w / (plan.dwgRef.baseW || plan.dwgRef.w)).toFixed(2)}
-                             onChange={(e) => {
-                               const f = +e.target.value;
-                               const bw = plan.dwgRef.baseW || plan.dwgRef.w;
-                               const bh = plan.dwgRef.baseH || plan.dwgRef.h;
-                               updateDwgRef({ w: +(bw * f).toFixed(2), h: +(bh * f).toFixed(2) });
-                             }} />
+                      <label className="tiny" style={{display:'flex', alignItems:'center', gap:6}}>
+                        <input type="checkbox" checked={!!plan.dwgRef.locked}
+                               onChange={(e) => updateDwgRef({ locked: e.target.checked })}/>
+                        Lock (no select)
+                      </label>
+                      <div className="tiny">Opacity {Math.round((plan.dwgRef.opacity ?? 0.85) * 100)}%</div>
+                      <input type="range" min="0.1" max="1" step="0.05"
+                             value={plan.dwgRef.opacity ?? 0.85}
+                             onChange={(e) => updateDwgRef({ opacity: +e.target.value })}/>
                       <button className="pixel-btn sm ghost" style={{justifyContent:'center'}}
                               onClick={() => updateDwgRef({ x: +(plan.bounds.w / 2).toFixed(2), y: +(plan.bounds.h / 2).toFixed(2) })}>
                         CENTER REF
                       </button>
+                      <button className="pixel-btn sm ghost" style={{justifyContent:'center', color:'var(--red, #e05)'}}
+                              onClick={removeDwg}>
+                        ✕ REMOVE DWG
+                      </button>
                     </div>
                   )}
-                  <button className="pixel-btn sm ghost" style={{width:'100%', justifyContent:'center', marginTop:6}} onClick={() => showToast('Loaded template')}>≡ LOAD TEMPLATE</button>
+                  <button className="pixel-btn sm ghost" style={{width:'100%', justifyContent:'center', marginTop:6}} onClick={() => setShowTemplateLoad(true)}>≡ LOAD TEMPLATE</button>
                 </div>
 
                 <div className="tool-group">
@@ -436,6 +639,24 @@ function App(){
                     <button className="pixel-btn icon sm" onClick={undo} title="Undo (⌘Z)" disabled={!history.length}>↶</button>
                     <button className="pixel-btn icon sm" onClick={redo} title="Redo (⌘⇧Z)" disabled={!future.length}>↷</button>
                     <button className="pixel-btn sm" onClick={() => setShowCreator(true)} style={{flex:1, justifyContent:'center'}}>+ SCENE</button>
+                  </div>
+                  <div className="row gap-12" style={{marginTop:6}}>
+                    <button className="pixel-btn sm ghost" title="Add a column obstacle — paths will route around it"
+                            style={{flex:1, justifyContent:'center'}}
+                            onClick={() => {
+                              const id = 'col' + Math.floor(Math.random() * 9000 + 100);
+                              setPlanWithHistory(p => ({
+                                ...p,
+                                rects: [...p.rects, {
+                                  id, name: 'Column',
+                                  x: +(p.bounds.w / 2 - 0.15).toFixed(2),
+                                  y: +(p.bounds.h / 2 - 0.15).toFixed(2),
+                                  w: 0.3, h: 0.3,
+                                  kind: 'column',
+                                  gameObject: '',
+                                }],
+                              }));
+                            }}>▪ ADD COLUMN</button>
                   </div>
                 </div>
 
@@ -470,8 +691,9 @@ function App(){
               <span className="tiny">{plan.bounds.w} × {plan.bounds.h} m</span>
               <span className="grow" />
               <div className="row gap-12">
-                <button className="pixel-btn sm ghost" onClick={() => setPlanWithHistory(JSON.parse(JSON.stringify(SAMPLE.FLOORPLAN)))}>RESET</button>
-                <button className="pixel-btn sm ghost" onClick={() => showToast('Saved as template')}>SAVE TEMPLATE</button>
+                <button className="pixel-btn sm ghost" onClick={adjustGridToContent}>ADJUST GRID</button>
+                <button className="pixel-btn sm ghost" onClick={() => setPlanWithHistory(JSON.parse(JSON.stringify(getFloorplanForAdapt(activeAdaptId))))}>RESET</button>
+                <button className="pixel-btn sm ghost" onClick={() => setShowTemplateSave(true)}>SAVE TEMPLATE</button>
                 <button className="pixel-btn sm" onClick={() => { setPlayMode(true); setIsPlaying(true); setPlayStep(0); }}>▶ PLAY</button>
                 <button className="pixel-btn sm primary" onClick={() => setRoute('export')}>EXPORT →</button>
               </div>
@@ -507,7 +729,8 @@ function App(){
       )}
 
       {route === 'export' && (
-        <ExportView project={project} plan={plan} onClose={() => setRoute('editor')} />
+        <ExportView project={project} plan={plan} onClose={() => setRoute('editor')}
+                    onSaveTemplate={() => { setRoute('editor'); setShowTemplateSave(true); }}/>
       )}
 
       {Statusbar}
@@ -552,6 +775,25 @@ function App(){
                   onClose={() => { setPlayMode(false); setIsPlaying(false); }}/>
       )}
 
+      {showTemplateLoad && (
+        <TemplateLoadModal
+          templates={templates}
+          onLoad={(tpl) => { onLoadTemplate(tpl); setShowTemplateLoad(false); }}
+          onDelete={onDeleteTemplate}
+          onClose={() => setShowTemplateLoad(false)}/>
+      )}
+
+      {showTemplateSave && (
+        <TemplateSaveModal
+          defaultName={`${project.name} · ${new Date().toLocaleDateString()}`}
+          onSave={(name) => { onSaveTemplate(name); setShowTemplateSave(false); }}
+          onClose={() => setShowTemplateSave(false)}/>
+      )}
+
+      {showAbout && (
+        <AboutModal appName={APP_NAME} version={APP_VERSION} onClose={() => setShowAbout(false)} />
+      )}
+
       {toast && <div className="toast">{toast}</div>}
 
       <TweaksPanel title="Tweaks">
@@ -578,7 +820,7 @@ function App(){
                     onChange={v => setTweak('sidebarLayout', v)} />
         <div className="divider"/>
         <div className="twk-sect" style={{paddingTop:0}}>Quick actions</div>
-        <TweakButton label="Reset floorplan" secondary onClick={() => { setPlan(JSON.parse(JSON.stringify(SAMPLE.FLOORPLAN))); }}/>
+        <TweakButton label="Reset floorplan" secondary onClick={() => { setPlan(JSON.parse(JSON.stringify(getFloorplanForAdapt(activeAdaptId)))); }}/>
       </TweaksPanel>
     </div>
   );
@@ -588,13 +830,13 @@ function App(){
 function SceneListInline({ plan, selected, setSelected, conflicts }){
   return (
     <div className="scene-list scroll-y" style={{flex:1, minHeight:0}}>
-      {plan.rects.map(r => (
+      {plan.rects.filter(r => r.kind !== 'column').map(r => (
         <div key={r.id}
-             className={`scene-row${selected === r.id ? ' selected' : ''}${r.kind === 'unified-hub' ? ' unified' : ''}${conflicts.has(r.id) ? ' conflict' : ''}`}
+             className={`scene-row${selected === r.id ? ' selected' : ''}${r.kind === 'alternate-content' ? ' unified' : ''}${conflicts.has(r.id) ? ' conflict' : ''}`}
              onClick={() => setSelected(r.id)}>
           <span className="ix">{r.id.replace('s','')}</span>
           <span className="nm">{r.name}</span>
-          {r.kind === 'unified-hub' && <span style={{fontSize:9, color:'var(--amber-deep)'}}>HUB</span>}
+          {r.kind === 'alternate-content' && <span style={{fontSize:9, color:'var(--amber-deep)'}}>ALT</span>}
           {r.kind === 'pod-room' && <span style={{fontSize:9, color:'var(--ink-3)'}}>PODS</span>}
         </div>
       ))}
@@ -603,6 +845,21 @@ function SceneListInline({ plan, selected, setSelected, conflicts }){
 }
 
 // Tiny stub — renders nothing visible (used for topbar layout)
+function AboutModal({ appName, version, onClose }){
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal about-modal" onClick={e => e.stopPropagation()}>
+        <button className="pixel-btn icon ghost about-close" onClick={onClose}>X</button>
+        <div className="about-logo">
+          <img className="about-logo-img" src="assets/sambo_logo.svg" alt={appName} />
+        </div>
+        <div className="about-version">floorplan maker {version}</div>
+        <div className="about-credit">created by Marcos Ovejero and Ricard Orpi</div>
+      </div>
+    </div>
+  );
+}
+
 function ToolIconStub(){ return null; }
 
 // Play mode overlay
@@ -681,6 +938,117 @@ function PlayMode({ plan, step, setStep, isPlaying, setIsPlaying, speed, setSpee
             </div>
           </div>
           <span className="tiny muted mono-num">{(step * 1.8 / speed).toFixed(1)}s / {((total-1) * 1.8 / speed).toFixed(1)}s</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Template modals ───────────────────────────────────────────────────────────
+
+function TemplateSaveModal({ defaultName, onSave, onClose }){
+  const [name, setName] = React.useState(defaultName || '');
+  const handleSave = () => { if (name.trim()) onSave(name.trim()); };
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{width:360, maxWidth:'90vw'}}>
+        <div className="modal-head">
+          <div>
+            <div className="label-amber label">SAVE</div>
+            <div style={{fontFamily:"'Silkscreen', monospace", fontSize:14}}>SAVE AS TEMPLATE</div>
+          </div>
+          <button className="pixel-btn icon ghost" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body">
+          <div className="field">
+            <div className="label">Template name</div>
+            <input value={name} onChange={e => setName(e.target.value)}
+                   onKeyDown={e => { if (e.key === 'Enter') handleSave(); }}
+                   placeholder="e.g. Standard Loft · 400m²"
+                   autoFocus/>
+          </div>
+          <div className="tiny muted" style={{lineHeight:1.5}}>
+            Templates are saved locally in this browser. They can be reloaded for any project or adaptation.
+          </div>
+        </div>
+        <div className="modal-foot">
+          <button className="pixel-btn ghost" onClick={onClose}>CANCEL</button>
+          <button className="pixel-btn primary" onClick={handleSave} disabled={!name.trim()}>SAVE TEMPLATE</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TemplateLoadModal({ templates, onLoad, onDelete, onClose }){
+  const [confirmId, setConfirmId] = React.useState(null);
+  const [filter, setFilter] = React.useState('');
+  const shown = templates.filter(t =>
+    !filter || t.name.toLowerCase().includes(filter.toLowerCase()) ||
+    t.projectId.toLowerCase().includes(filter.toLowerCase())
+  );
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <div className="modal" onClick={e => e.stopPropagation()} style={{width:520, maxWidth:'94vw'}}>
+        <div className="modal-head">
+          <div>
+            <div className="label-amber label">TEMPLATES</div>
+            <div style={{fontFamily:"'Silkscreen', monospace", fontSize:14}}>LOAD FLOORPLAN</div>
+          </div>
+          <button className="pixel-btn icon ghost" onClick={onClose}>✕</button>
+        </div>
+        <div className="modal-body" style={{gap:8}}>
+          {templates.length > 3 && (
+            <input value={filter} onChange={e => setFilter(e.target.value)}
+                   placeholder="Filter templates…" style={{marginBottom:4}}/>
+          )}
+          <div style={{display:'flex', flexDirection:'column', gap:6, maxHeight:'55vh', overflowY:'auto'}}>
+            {shown.length === 0 && (
+              <div className="insp-empty" style={{padding:'24px 0'}}>
+                <div className="tiny muted">
+                  {templates.length === 0
+                    ? 'No templates saved yet — use Save Template to store a floorplan layout.'
+                    : 'No templates match your search.'}
+                </div>
+              </div>
+            )}
+            {shown.map(tpl => (
+              <div key={tpl.id} className="pixel-box" style={{padding:'10px 12px'}}>
+                <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:8}}>
+                  <div style={{minWidth:0}}>
+                    <div style={{fontFamily:"'Silkscreen', monospace", fontSize:12, marginBottom:3}}>{tpl.name}</div>
+                    <div className="tiny muted">
+                      {tpl.projectId} · {tpl.adaptId}
+                    </div>
+                    <div className="tiny muted" style={{marginTop:2}}>
+                      {tpl.plan.rects?.length ?? 0} scenes · {tpl.plan.connections?.length ?? 0} connections
+                      · {tpl.plan.bounds?.w ?? '?'}×{tpl.plan.bounds?.h ?? '?'}m
+                      · saved {new Date(tpl.date).toLocaleDateString()}
+                    </div>
+                  </div>
+                  <div style={{display:'flex', gap:4, flexShrink:0}}>
+                    {confirmId === tpl.id
+                      ? <>
+                          <button className="pixel-btn sm ghost" style={{color:'var(--danger)'}}
+                                  onClick={() => { onDelete(tpl.id); setConfirmId(null); }}>CONFIRM</button>
+                          <button className="pixel-btn sm ghost" onClick={() => setConfirmId(null)}>CANCEL</button>
+                        </>
+                      : <>
+                          <button className="pixel-btn sm primary" onClick={() => onLoad(tpl)}>LOAD</button>
+                          <button className="pixel-btn sm ghost" style={{color:'var(--danger)'}}
+                                  title="Delete template"
+                                  onClick={() => setConfirmId(tpl.id)}>✕</button>
+                        </>
+                    }
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+        <div className="modal-foot">
+          <span className="tiny muted">{templates.length} template{templates.length !== 1 ? 's' : ''} saved</span>
+          <button className="pixel-btn ghost" onClick={onClose}>CLOSE</button>
         </div>
       </div>
     </div>

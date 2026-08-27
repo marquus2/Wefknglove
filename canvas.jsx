@@ -55,6 +55,8 @@ function findConflicts(rects){
   const out = new Set();
   for (let i = 0; i < rects.length; i++){
     for (let j = i + 1; j < rects.length; j++){
+      // Alternate-content scenes are pure connectors — they may overlap freely
+      if (rects[i].kind === 'alternate-content' || rects[j].kind === 'alternate-content') continue;
       if (PathUtil.rectsOverlap(rects[i], rects[j])){ out.add(rects[i].id); out.add(rects[j].id); }
     }
   }
@@ -90,9 +92,30 @@ function FloorplanCanvas(props){
     if (!wrapRef.current) return;
     const fit = () => {
       const r = wrapRef.current.getBoundingClientRect();
-      const fitScale = Math.min((r.width - 80) / plan.bounds.w, (r.height - 80) / plan.bounds.h);
-      const s = Math.max(8, fitScale * 0.5);
-      setView({ x: (r.width - plan.bounds.w * s) / 2, y: (r.height - plan.bounds.h * s) / 2, scale: s });
+      const visibleRects = plan.rects.filter(rect => rect.kind !== 'alternate-content');
+      const xs = visibleRects.flatMap(rect => [rect.x, rect.x + rect.w]);
+      const ys = visibleRects.flatMap(rect => [rect.y, rect.y + rect.h]);
+      if (plan.dwgRef?.visible !== false && plan.dwgRef) {
+        xs.push(plan.dwgRef.x - plan.dwgRef.w / 2, plan.dwgRef.x + plan.dwgRef.w / 2);
+        ys.push(plan.dwgRef.y - plan.dwgRef.h / 2, plan.dwgRef.y + plan.dwgRef.h / 2);
+      }
+      const minX = xs.length ? Math.max(0, Math.min(...xs)) : 0;
+      const maxX = xs.length ? Math.min(plan.bounds.w, Math.max(...xs)) : plan.bounds.w;
+      const minY = ys.length ? Math.max(0, Math.min(...ys)) : 0;
+      const maxY = ys.length ? Math.min(plan.bounds.h, Math.max(...ys)) : plan.bounds.h;
+      const contentW = Math.max(1, maxX - minX);
+      const contentH = Math.max(1, maxY - minY);
+      const pad = 72;
+      const fitScale = Math.min(
+        Math.max(1, r.width - pad) / contentW,
+        Math.max(1, r.height - pad) / contentH
+      );
+      const s = Math.max(2, Math.min(80, fitScale));
+      setView({
+        x: (r.width - contentW * s) / 2 - minX * s,
+        y: (r.height - contentH * s) / 2 - (plan.bounds.h - maxY) * s,
+        scale: s,
+      });
     };
     fit();
     const ro = new ResizeObserver(fit);
@@ -106,7 +129,7 @@ function FloorplanCanvas(props){
     const mx = e.clientX - r.left, my = e.clientY - r.top;
     const wp = s2w({ x: mx, y: my });
     const factor = e.deltaY > 0 ? 0.9 : 1.1;
-    const ns = Math.max(6, Math.min(80, view.scale * factor));
+    const ns = Math.max(2, Math.min(80, view.scale * factor));
     setView({ x: mx - wp.x * ns, y: my - (plan.bounds.h - wp.y) * ns, scale: ns });
   };
 
@@ -175,6 +198,8 @@ function FloorplanCanvas(props){
   const beginRectDrag = (rect, e) => {
     e.stopPropagation();
     if (tool === 'connect'){
+      if (rect.kind === 'column') return;           // columns can't be connected
+      if (rect.kind === 'alternate-content') return; // ACs own their paths via entry/exit — no manual connections
       if (!connectFrom){ setConnectFrom(rect.id); }
       else if (connectFrom !== rect.id){
         const newId = 'c' + Math.floor(Math.random()*9000+100);
@@ -279,16 +304,11 @@ function FloorplanCanvas(props){
     window.addEventListener('pointerup', up);
   }, [tool, s2w, grid, setPlan]);
 
-  const beginNodeDrag = useCallback((connId, middleIdx, e, currentAllNodes) => {
+  const beginNodeDrag = useCallback((routeRef, laneIdx, middleIdx, e, currentAllNodes) => {
     e.stopPropagation();
     const domRect = wrapRef.current.getBoundingClientRect();
 
-    // Build starting middle nodes from current state
-    const conn = plan.connections.find(c => c.id === connId);
-    if (!conn) return;
-    const startMiddle = conn.customMiddleNodes
-      ? [...conn.customMiddleNodes]
-      : currentAllNodes.slice(1, -1).map(n => ({ ...n }));
+    const startMiddle = currentAllNodes.slice(1, -1).map(n => ({ ...n }));
 
     const move = (ev) => {
       const sp = { x: ev.clientX - domRect.left, y: ev.clientY - domRect.top };
@@ -297,15 +317,39 @@ function FloorplanCanvas(props){
       const newMiddle = startMiddle.map((n, i) => i === middleIdx ? snapped : n);
       setPlan(p => ({
         ...p,
-        connections: p.connections.map(c =>
-          c.id === connId ? { ...c, customMiddleNodes: newMiddle } : c
-        ),
+        connections: routeRef.kind === 'connection'
+          ? p.connections.map(c => {
+              if (c.id !== routeRef.id) return c;
+              if (c.mode === 'individual') {
+                const customLaneMiddleNodes = [...(c.customLaneMiddleNodes || [])];
+                customLaneMiddleNodes[laneIdx] = newMiddle;
+                return { ...c, customLaneMiddleNodes };
+              }
+              return { ...c, customMiddleNodes: newMiddle };
+            })
+          : p.connections,
+        rects: routeRef.kind === 'ac'
+          ? p.rects.map(r => {
+              if (r.id !== routeRef.acId) return r;
+              const customRoutes = { ...(r.customRoutes || {}) };
+              const route = { ...(customRoutes[routeRef.routeKey] || {}) };
+              if ((r.mode || 'unified') === 'individual') {
+                const customLaneMiddleNodes = [...(route.customLaneMiddleNodes || [])];
+                customLaneMiddleNodes[laneIdx] = newMiddle;
+                route.customLaneMiddleNodes = customLaneMiddleNodes;
+              } else {
+                route.customMiddleNodes = newMiddle;
+              }
+              customRoutes[routeRef.routeKey] = route;
+              return { ...r, customRoutes };
+            })
+          : p.rects,
       }));
     };
     const up = () => { window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
-  }, [plan, s2w, grid, setPlan]);
+  }, [s2w, grid, setPlan]);
 
   // ── Grid lines ────────────────────────────────────────────────────────────
   const gridLines = useMemo(() => {
@@ -323,18 +367,63 @@ function FloorplanCanvas(props){
 
   // ── Compute all connection lanes ──────────────────────────────────────────
   const drawnConns = useMemo(() => {
-    return plan.connections.map(c => {
-      const a = plan.rects.find(r => r.id === c.from);
-      const b = plan.rects.find(r => r.id === c.to);
-      if (!a || !b) return null;
-      const lanes = PathUtil.computeLanes(c, plan.rects);
-      return {
-        conn: c,
-        lanes,                            // array of node arrays
-        laneDs: lanes.map(nodes => PathUtil.toPathD(nodes, w2s, pathStyle)),
-        from: a, to: b,
-      };
-    }).filter(Boolean);
+    const columns = plan.rects.filter(r => r.kind === 'column');
+    const acIds = new Set(plan.rects.filter(r => r.kind === 'alternate-content').map(r => r.id));
+
+    // 1. Regular connections — both endpoints must be non-AC scenes
+    const regularConns = plan.connections
+      .filter(c => !acIds.has(c.from) && !acIds.has(c.to))
+      .map(c => {
+        const a = plan.rects.find(r => r.id === c.from);
+        const b = plan.rects.find(r => r.id === c.to);
+        if (!a || !b) return null;
+        if (PathUtil.rectsTouching(a, b)) return null;
+        const lanes = PathUtil.computeLanes(c, plan.rects, columns);
+        return {
+          conn: c,
+          lanes,
+          laneDs: lanes.map(nodes => PathUtil.toPathD(nodes, w2s, pathStyle)),
+          from: a, to: b,
+          acId: null,
+        };
+      }).filter(Boolean);
+
+    // 2. Synthetic paths from AC rects (entry→exit) — each AC owns its paths
+    const acConns = [];
+    plan.rects.filter(r => r.kind === 'alternate-content').forEach(r => {
+      const entryIds = r.entries || (r.entry ? [r.entry] : []);
+      const exitIds  = r.exits  || (r.exit  ? [r.exit]  : []);
+      const mode     = r.mode || 'unified';
+      entryIds.forEach(entId => {
+        exitIds.forEach(extId => {
+          const a = plan.rects.find(s => s.id === entId);
+          const b = plan.rects.find(s => s.id === extId);
+          if (!a || !b) return;
+          if (PathUtil.rectsTouching(a, b)) return;
+          const routeKey = `${entId}->${extId}`;
+          const customRoute = r.customRoutes?.[routeKey] || {};
+          const synth = {
+            id: `ac-${r.id}-${entId}-${extId}`,
+            from: entId,
+            to: extId,
+            mode,
+            customMiddleNodes: customRoute.customMiddleNodes,
+            customLaneMiddleNodes: customRoute.customLaneMiddleNodes,
+          };
+          const lanes = PathUtil.computeLanes(synth, plan.rects, columns);
+          acConns.push({
+            conn: synth,
+            lanes,
+            laneDs: lanes.map(nodes => PathUtil.toPathD(nodes, w2s, pathStyle)),
+            from: a, to: b,
+            acId: r.id,
+            routeKey,
+          });
+        });
+      });
+    });
+
+    return [...regularConns, ...acConns];
   }, [plan.connections, plan.rects, view, pathStyle]);
 
   // 1m width in screen pixels
@@ -344,7 +433,7 @@ function FloorplanCanvas(props){
   const rectFillFor = (r, isSel, isConflict) => {
     if (isConflict) return rectStyle === 'outlined' ? 'transparent' : 'oklch(0.78 0.18 28 / 0.35)';
     if (isSel)      return rectStyle === 'outlined' ? 'transparent' : 'oklch(0.85 0.12 65 / 0.35)';
-    if (r.kind === 'unified-hub')     return rectStyle === 'outlined' ? 'transparent' : 'oklch(0.86 0.10 65 / 0.30)';
+    if (r.kind === 'alternate-content') return 'none'; // always transparent — AC is a connector, not a filled room
     if (r.kind === 'pod-room') return rectStyle === 'outlined' ? 'transparent' : 'var(--panel)';
     if (rectStyle === 'ghosted' || rectStyle === 'outlined') return 'transparent';
     return rectStyle === 'filled' ? 'var(--panel-2)' : 'var(--panel)';
@@ -352,11 +441,26 @@ function FloorplanCanvas(props){
   const rectStrokeFor = (r, isSel, isConflict) => {
     if (isConflict) return 'var(--danger)';
     if (isSel)      return 'var(--amber-deep)';
-    if (r.kind === 'unified-hub') return 'var(--amber-deep)';
+    if (r.kind === 'alternate-content') return 'var(--amber-deep)';
     return 'var(--ink)';
   };
 
   const activeRectId = isPlaying && playStep != null ? plan.tourOrder[playStep] : null;
+  const acMarkersByScene = useMemo(() => {
+    const map = {};
+    const add = (sceneId, marker) => {
+      if (!sceneId) return;
+      if (!map[sceneId]) map[sceneId] = [];
+      map[sceneId].push(marker);
+    };
+    plan.rects.filter(r => r.kind === 'alternate-content').forEach(ac => {
+      const entryIds = ac.entries || (ac.entry ? [ac.entry] : []);
+      const exitIds = ac.exits || (ac.exit ? [ac.exit] : []);
+      entryIds.forEach(id => add(id, { type: 'entry', acId: ac.id }));
+      exitIds.forEach(id => add(id, { type: 'exit', acId: ac.id }));
+    });
+    return map;
+  }, [plan.rects]);
 
   return (
     <div className={`canvas-stage tool-${tool}`}
@@ -364,19 +468,17 @@ function FloorplanCanvas(props){
          onWheel={onWheel}
          onPointerDown={onPointerDown}
          onPointerMove={onPointerMove}>
-      <svg className="canvas-svg" preserveAspectRatio="none">
+      <svg className="canvas-svg canvas-grid-svg" preserveAspectRatio="none">
         <defs>
           <pattern id="conflict-hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
             <line x1="0" y1="0" x2="0" y2="6" stroke="var(--danger)" strokeWidth="2"/>
           </pattern>
         </defs>
 
-        {/* Boundary */}
         <rect x={w2s({x:0,y:plan.bounds.h}).x} y={w2s({x:0,y:plan.bounds.h}).y}
               width={plan.bounds.w * view.scale} height={plan.bounds.h * view.scale}
               fill="var(--panel-2)" stroke="var(--ink)" strokeWidth="1.5"/>
 
-        {/* Grid */}
         {layers.grid && gridStyle === 'lines' && gridLines.map((l, i) =>
           <line key={i} x1={l.x1} y1={l.y1} x2={l.x2} y2={l.y2}
                 stroke="var(--grid-color)" strokeWidth={l.major ? 0.6 : 0.3}/>
@@ -392,10 +494,38 @@ function FloorplanCanvas(props){
             <circle key={`d${i}-${j}`} cx={l.x1} cy={l.y1 - j*grid*view.scale} r={1} fill="var(--grid-color)"/>
           );
         })}
+      </svg>
 
-        {/* ── DWG reference layer ── */}
+      {/* DWG visual reference: above grid, below paths and levels. */}
+      {plan.dwgRef?.svgString && plan.dwgRef.visible !== false && (() => {
+        const ref = plan.dwgRef;
+        const tl = w2s({ x: ref.x - ref.w / 2, y: ref.y + ref.h / 2 });
+        const sw = ref.w * view.scale;
+        const sh = ref.h * view.scale;
+        return (
+          <div key={ref.svgString.length}
+               className="dwg-visual-layer"
+               dangerouslySetInnerHTML={{ __html: ref.svgString }}
+               style={{
+                 left: tl.x + 'px',
+                 top:  tl.y + 'px',
+                 width:  sw + 'px',
+                 height: sh + 'px',
+                 opacity: ref.opacity ?? 0.85,
+               }} />
+        );
+      })()}
+
+      <svg className="canvas-svg canvas-main-svg" preserveAspectRatio="none">
+        <defs>
+          <pattern id="conflict-hatch" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+            <line x1="0" y1="0" x2="0" y2="6" stroke="var(--danger)" strokeWidth="2"/>
+          </pattern>
+        </defs>
+
         {plan.dwgRef && plan.sourceFile && plan.dwgRef.visible !== false && (() => {
           const ref = plan.dwgRef;
+          const isLocked = !!ref.locked;
           const tl = w2s({ x: ref.x - ref.w / 2, y: ref.y + ref.h / 2 });
           const sw = ref.w * view.scale;
           const sh = ref.h * view.scale;
@@ -403,51 +533,44 @@ function FloorplanCanvas(props){
           return (
             <g>
               <rect x={tl.x} y={tl.y} width={sw} height={sh}
-                    fill="rgba(120,170,255,0.12)"
-                    stroke={dwgActive ? 'var(--amber-deep)' : 'rgba(80,120,200,0.65)'}
+                    fill="rgba(120,170,255,0.04)"
+                    stroke={isLocked ? 'rgba(80,120,200,0.3)' : dwgActive ? 'var(--amber-deep)' : 'rgba(80,120,200,0.65)'}
                     strokeWidth={dwgActive ? 2 : 1.2}
                     strokeDasharray="6 4"
-                    onPointerDown={beginDwgDrag}
-                    style={{cursor:'move'}} />
-              {ref.svgDataUri && (
-                <image href={ref.svgDataUri}
-                       x={tl.x} y={tl.y}
-                       width={sw} height={sh}
-                       preserveAspectRatio="none"
-                       opacity="0.95"
-                       onPointerDown={beginDwgDrag}
-                       style={{cursor:'move'}} />
-              )}
-              <line x1={tl.x} y1={tl.y} x2={tl.x + sw} y2={tl.y + sh} stroke="rgba(80,120,200,0.45)" strokeDasharray="4 3"/>
-              <line x1={tl.x + sw} y1={tl.y} x2={tl.x} y2={tl.y + sh} stroke="rgba(80,120,200,0.45)" strokeDasharray="4 3"/>
+                    onPointerDown={isLocked ? undefined : beginDwgDrag}
+                    style={{cursor: isLocked ? 'default' : 'move'}} />
               <rect x={tl.x + 4} y={tl.y + 4} width={Math.max(80, Math.min(220, sw - 8))} height="16" fill="rgba(20,20,30,0.75)"/>
               <text x={tl.x + 8} y={tl.y + 15} fill="#dce7ff" fontSize="10" fontFamily="'JetBrains Mono', monospace">
-                DWG · {plan.sourceFile}
+                {isLocked ? 'LOCKED ' : ''}DWG / {plan.sourceFile}
               </text>
-              <circle data-dwg-handle="1" cx={br.x} cy={br.y} r="7" fill="var(--amber)" stroke="var(--ink)" strokeWidth="1.5"
-                      style={{cursor:'nwse-resize'}} onPointerDown={beginDwgScale} />
+              {!isLocked && (
+                <circle data-dwg-handle="1" cx={br.x} cy={br.y} r="7" fill="var(--amber)" stroke="var(--ink)" strokeWidth="1.5"
+                        style={{cursor:'nwse-resize'}} onPointerDown={beginDwgScale} />
+              )}
             </g>
           );
         })()}
 
-        {/* ── Paths (rendered below rects) ── */}
-        {layers.paths && drawnConns.map(({ conn, lanes, laneDs, from, to }) => {
-          const isSel       = selectedConn === conn.id;
+        {layers.paths && drawnConns.map(({ conn, lanes, laneDs, from, to, acId, routeKey }) => {
+          const isSel       = acId ? selected === acId : selectedConn === conn.id;
           const isIndiv     = conn.mode === 'individual';
           const isFlowing   = isPlaying || isSel;
-          const editingPath = tool === 'edit' && isSel && !isIndiv;
+          const editingPath = tool === 'edit' && isSel;
+          const routeRef = acId
+            ? { kind: 'ac', acId, routeKey }
+            : { kind: 'connection', id: conn.id };
 
           return (
             <g key={conn.id}
-               onClick={(e) => { e.stopPropagation(); setSelectedConn(conn.id); setSelected(null); }}
+               onClick={(e) => {
+                 e.stopPropagation();
+                 if (acId) { setSelected(acId); setSelectedConn(null); }
+                 else { setSelectedConn(conn.id); setSelected(null); }
+               }}
                style={{cursor:'pointer'}}>
-
-              {/* Wide invisible hit target */}
               {laneDs.map((d, i) =>
                 <path key={`hit${i}`} d={d} fill="none" stroke="transparent" strokeWidth={laneW + 14}/>
               )}
-
-              {/* Lane strokes — 1m wide */}
               {laneDs.map((d, i) => {
                 const color = isIndiv
                   ? PathUtil.LANE_COLORS[i]
@@ -461,8 +584,6 @@ function FloorplanCanvas(props){
                         opacity={isIndiv ? 0.82 : 0.75}/>
                 );
               })}
-
-              {/* Flow animation overlay */}
               {isFlowing && laneDs.map((d, i) =>
                 <path key={`flow${i}`} d={d} fill="none"
                       stroke="rgba(255,255,255,0.55)"
@@ -470,11 +591,9 @@ function FloorplanCanvas(props){
                       strokeDasharray={`${laneW * 0.6} ${laneW * 0.8}`}
                       style={{animation:'dash-flow 1.5s linear infinite'}}/>
               )}
-
-              {/* Mode badge (midpoint label) */}
               {(() => {
                 const mid = w2s({ x: (from.x+from.w/2+to.x+to.w/2)/2, y: (from.y+from.h/2+to.y+to.h/2)/2 });
-                const label = isIndiv ? '×6' : '●';
+                const label = isIndiv ? 'x6' : '*';
                 return (
                   <g>
                     <rect x={mid.x-14} y={mid.y-9} width="28" height="18" fill="var(--ink)" rx="1"/>
@@ -483,49 +602,58 @@ function FloorplanCanvas(props){
                   </g>
                 );
               })()}
-
-              {/* ── Node edit handles (unified only, middle nodes only) ── */}
-              {editingPath && lanes.length > 0 && (() => {
-                const nodes = lanes[0];
-                return nodes.map((n, nodeIdx) => {
+              {editingPath && lanes.map((nodes, laneIdx) =>
+                nodes.map((n, nodeIdx) => {
                   const sp = w2s(n);
                   const isAnchor = nodeIdx === 0 || nodeIdx === nodes.length - 1;
+                  const key = `nd-${laneIdx}-${nodeIdx}`;
                   return (
-                    <circle key={`nd${nodeIdx}`}
+                    <circle key={key}
                             data-node-handle="1"
                             cx={sp.x} cy={sp.y}
-                            r={isAnchor ? 6 : 8}
-                            fill={isAnchor ? 'var(--panel)' : 'var(--amber)'}
+                            r={isAnchor ? 4.5 : isIndiv ? 6 : 8}
+                            fill={isAnchor ? 'var(--panel)' : (isIndiv ? PathUtil.LANE_COLORS[laneIdx] : 'var(--amber)')}
                             stroke={isAnchor ? 'var(--ink-3)' : 'var(--ink)'}
-                            strokeWidth={isAnchor ? 1.5 : 2}
+                            strokeWidth={isAnchor ? 1.2 : 2}
+                            opacity={isAnchor ? 0.7 : 1}
                             style={{cursor: isAnchor ? 'not-allowed' : 'grab'}}
                             onPointerDown={isAnchor ? undefined
-                              : (e) => beginNodeDrag(conn.id, nodeIdx - 1, e, nodes)}/>
+                              : (e) => beginNodeDrag(routeRef, laneIdx, nodeIdx - 1, e, nodes)}/>
                   );
-                });
-              })()}
-
-              {/* Edit mode hint when no middle nodes */}
-              {editingPath && lanes[0]?.length <= 2 && (() => {
-                const mid = w2s({ x: (from.x+from.w/2+to.x+to.w/2)/2, y: (from.y+from.h/2+to.y+to.h/2)/2 });
-                return (
-                  <text x={mid.x} y={mid.y - laneW - 6} textAnchor="middle"
-                        fill="var(--ink-3)" fontSize="10" fontFamily="'JetBrains Mono', monospace">
-                    ruta recta · sin nodos editables
-                  </text>
-                );
-              })()}
+                })
+              )}
             </g>
           );
         })}
 
-        {/* ── Rectangles (above paths) ── */}
-        {layers.rects && plan.rects.map(r => {
+        {layers.rects && plan.rects.filter(r => r.kind !== 'alternate-content').map(r => {
           const tl = w2s({ x: r.x, y: r.y + r.h });
           const isSel = selected === r.id;
           const isConflict = conflicts.has(r.id);
           const isActive = activeRectId === r.id;
           const sw = r.w * view.scale, sh = r.h * view.scale;
+          const DirArrow = () => {
+            if (sw < 25 || sh < 25) return null;
+            const dirRad = (r.dir || 0) * Math.PI / 180;
+            const dx = Math.cos(dirRad), dy = -Math.sin(dirRad);
+            const px = -dy, py = dx;
+            const fx = tl.x + sw / 2 + dx * (sw / 2);
+            const fy = tl.y + sh / 2 + dy * (sh / 2);
+            const ax = fx - dx * 5;
+            const ay = fy - dy * 5;
+            const len = 9;
+            const half = len * 0.55;
+            const tipX = ax + dx * len;
+            const tipY = ay + dy * len;
+            const baseX = ax - dx * len;
+            const baseY = ay - dy * len;
+            return (
+              <polygon points={`${tipX},${tipY} ${baseX+px*half},${baseY+py*half} ${baseX-px*half},${baseY-py*half}`}
+                       fill={isSel ? 'var(--amber-deep)' : 'var(--ink-3)'}
+                       opacity="0.85"
+                       pointerEvents="none" />
+            );
+          };
           return (
             <g key={r.id}
                onPointerDown={(e) => beginRectDrag(r, e)}
@@ -534,8 +662,8 @@ function FloorplanCanvas(props){
               <rect x={tl.x} y={tl.y} width={sw} height={sh}
                     fill={rectFillFor(r, isSel, isConflict)}
                     stroke={rectStrokeFor(r, isSel, isConflict)}
-                    strokeWidth={isSel||isConflict ? 2 : r.kind==='unified-hub' ? 1.5 : 1}
-                    strokeDasharray={r.kind==='pod-room' ? '4 2' : '0'}/>
+                    strokeWidth={isSel||isConflict ? 2 : r.kind==='alternate-content' ? 1.5 : 1}
+                    strokeDasharray={r.kind==='pod-room' || r.kind==='alternate-content' ? '4 2' : '0'}/>
               {isActive && <rect x={tl.x-4} y={tl.y-4} width={sw+8} height={sh+8} fill="none" stroke="var(--amber)" strokeWidth="3" strokeDasharray="6 3"/>}
               {connectFrom===r.id && <rect x={tl.x-3} y={tl.y-3} width={sw+6} height={sh+6} fill="none" stroke="var(--amber)" strokeWidth="2" strokeDasharray="4 2"/>}
               {isSel && <rect x={tl.x-1} y={tl.y-1} width={sw+2} height={sh+2} fill="none" stroke="var(--amber-deep)" strokeWidth="2" strokeDasharray="4 2" pointerEvents="none"/>}
@@ -543,18 +671,50 @@ function FloorplanCanvas(props){
                 <>
                   <text x={tl.x+6} y={tl.y+14} fill={isConflict?'var(--danger)':'var(--ink)'} fontSize="10" fontFamily="'Silkscreen', monospace" letterSpacing="0.05em">{r.id.toUpperCase()}</text>
                   <text x={tl.x+6} y={tl.y+28} fill={isConflict?'var(--danger)':'var(--ink)'} fontSize="11" fontFamily="'JetBrains Mono', monospace" fontWeight="500">{r.name}</text>
-                  {sh > 60 && <text x={tl.x+6} y={tl.y+sh-6} fill="var(--ink-3)" fontSize="9" fontFamily="'JetBrains Mono', monospace">{r.w}×{r.h}m · 6u</text>}
+                  {sh > 60 && <text x={tl.x+6} y={tl.y+sh-6} fill="var(--ink-3)" fontSize="9" fontFamily="'JetBrains Mono', monospace">{r.w}x{r.h}m</text>}
                 </>
               )}
+              {(acMarkersByScene[r.id] || []).map((marker, idx) => {
+                const inset = 4 + idx * 5;
+                const color = marker.type === 'entry' ? 'var(--amber-deep)' : 'var(--amber)';
+                const dash = marker.type === 'entry' ? '5 3' : '2 3';
+                return (
+                  <rect key={`${marker.acId}-${marker.type}-${idx}`}
+                        x={tl.x + inset} y={tl.y + inset}
+                        width={Math.max(0, sw - inset * 2)}
+                        height={Math.max(0, sh - inset * 2)}
+                        fill="none"
+                        stroke={color}
+                        strokeWidth={selected === marker.acId ? 2.2 : 1.3}
+                        strokeDasharray={dash}
+                        pointerEvents="none" />
+                );
+              })}
+              <DirArrow />
               {r.kind === 'pod-room' && Array.isArray(r.pods) && r.pods.slice(0, 6).map((pod, idx) => {
                 const p = w2s({ x: r.x + pod.x, y: r.y + pod.y });
+                const isEditPod = tool === 'edit' && selected === r.id;
+                const podRad = (pod.dir ?? 0) * Math.PI / 180;
+                const adx = Math.cos(podRad), ady = -Math.sin(podRad);
+                const apx = -ady, apy = adx;
+                const tipLen = isEditPod ? 11 : 8;
+                const half = tipLen * 0.62;
+                const tip = { x: p.x + adx * tipLen, y: p.y + ady * tipLen };
+                const base = { x: p.x - adx * (tipLen * 0.35), y: p.y - ady * (tipLen * 0.35) };
+                const bl = { x: base.x + apx * half, y: base.y + apy * half };
+                const br = { x: base.x - apx * half, y: base.y - apy * half };
+                const lblX = tip.x + adx * 6;
+                const lblY = tip.y + ady * 6 + 4;
                 return (
                   <g key={`${r.id}-pod-${idx}`}>
-                    <circle cx={p.x} cy={p.y} r={tool === 'edit' && selected === r.id ? 6 : 4}
-                            fill="var(--amber)" stroke="var(--ink)" strokeWidth="1.5"
-                            style={{cursor: tool === 'edit' && selected === r.id ? 'grab' : 'default'}}
-                            onPointerDown={tool === 'edit' && selected === r.id ? (e) => beginPodDrag(r, idx, e) : undefined} />
-                    <text x={p.x} y={p.y - 7} textAnchor="middle" fill="var(--ink-3)" fontSize="8" fontFamily="'JetBrains Mono', monospace">{idx + 1}</text>
+                    <circle cx={p.x} cy={p.y} r={view.scale * 0.4}
+                            fill="none" stroke="var(--amber)" strokeWidth="0.8"
+                            strokeDasharray="3 2" opacity="0.45" pointerEvents="none"/>
+                    <polygon points={`${tip.x},${tip.y} ${bl.x},${bl.y} ${br.x},${br.y}`}
+                            fill="var(--amber)" stroke="var(--ink)" strokeWidth={isEditPod ? 1.5 : 1}
+                            style={{cursor: isEditPod ? 'grab' : 'default'}}
+                            onPointerDown={isEditPod ? (e) => beginPodDrag(r, idx, e) : undefined} />
+                    <text x={lblX} y={lblY} textAnchor="middle" fill="var(--amber-deep)" fontSize="11" fontWeight="700" fontFamily="'JetBrains Mono', monospace" pointerEvents="none">{idx + 1}</text>
                   </g>
                 );
               })}
@@ -562,7 +722,6 @@ function FloorplanCanvas(props){
           );
         })}
 
-        {/* Rubber-band creation */}
         {rubber && (() => {
           const tl = w2s({x:rubber.x, y:rubber.y+rubber.h});
           return <rect x={tl.x} y={tl.y} width={rubber.w*view.scale} height={rubber.h*view.scale}

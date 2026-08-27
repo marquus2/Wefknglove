@@ -6,14 +6,14 @@ const { useState, useMemo } = React;
 function SceneList({ plan, selected, setSelected, conflicts }){
   return (
     <div className="scene-list scroll-y">
-      {plan.rects.map((r, i) => (
+      {plan.rects.filter(r => r.kind !== 'column').map((r, i) => (
         <div key={r.id}
-             className={`scene-row${selected === r.id ? ' selected' : ''}${r.kind === 'unified-hub' ? ' unified' : ''}${conflicts.has(r.id) ? ' conflict' : ''}`}
+             className={`scene-row${selected === r.id ? ' selected' : ''}${r.kind === 'alternate-content' ? ' unified' : ''}${conflicts.has(r.id) ? ' conflict' : ''}`}
              onClick={() => setSelected(r.id)}>
           <span className="ix">{r.id.replace('s','').toUpperCase()}</span>
           <span className="nm">{r.name}</span>
           <span className="meta">{r.w}×{r.h}m</span>
-          {r.kind === 'unified-hub' && <span className="pixel-tag amber tiny" style={{padding:'1px 4px'}}>HUB</span>}
+          {r.kind === 'alternate-content' && <span className="pixel-tag amber tiny" style={{padding:'1px 4px'}}>ALT</span>}
           {r.kind === 'pod-room' && <span className="pixel-tag ghost tiny" style={{padding:'1px 4px'}}>PODS</span>}
         </div>
       ))}
@@ -28,6 +28,7 @@ function Inspector({ plan, setPlan, selected, selectedConn, setSelectedConn, onA
 
   const updateRect = (patch) => setPlan(p => ({...p, rects: p.rects.map(r => r.id === selected ? { ...r, ...patch } : r)}));
   const updateConn = (patch) => setPlan(p => ({...p, connections: p.connections.map(c => c.id === selectedConn ? { ...c, ...patch } : c)}));
+  const updateConnById = (connId, patch) => setPlan(p => ({...p, connections: p.connections.map(c => c.id === connId ? { ...c, ...patch } : c)}));
   const podRoomDefaults = [
     { id: 'pod-1', x: 1, y: 3, gameObject: 'Scene_Pod_01' },
     { id: 'pod-2', x: 2, y: 3, gameObject: 'Scene_Pod_02' },
@@ -57,17 +58,63 @@ function Inspector({ plan, setPlan, selected, selectedConn, setSelectedConn, onA
               const a = plan.rects.find(r => r.id === c.from);
               const b = plan.rects.find(r => r.id === c.to);
               if (!a || !b) return null;
+              const auto = PathUtil.pickFaces(a, b);
+              const toggleMode = (e) => {
+                e.stopPropagation();
+                setPlan(p => ({ ...p, connections: p.connections.map(cc =>
+                  cc.id === c.id ? { ...cc, mode: cc.mode === 'unified' ? 'individual' : 'unified', customMiddleNodes: null } : cc
+                )}));
+              };
+              const deleteConn = (e) => {
+                e.stopPropagation();
+                setPlan(p => ({ ...p, connections: p.connections.filter(cc => cc.id !== c.id) }));
+                setSelectedConn(null);
+              };
+              const FacePicker = ({ label, current, autoDir, onChange }) => (
+                <div style={{display:'flex', alignItems:'center', gap:2, marginTop:3}}>
+                  <span className="tiny muted" style={{minWidth:26, fontSize:9}}>{label}</span>
+                  {['N','E','S','W'].map(dir => {
+                    const isAuto = !current && dir === autoDir;
+                    const isSet  = current === dir;
+                    return (
+                      <button key={dir}
+                              className="pixel-btn sm ghost"
+                              style={{padding:'0 4px', fontSize:9, lineHeight:'14px', minWidth:16,
+                                      background: isSet ? 'var(--amber-deep)' : isAuto ? 'var(--amber)' : 'var(--panel-2)',
+                                      color: (isSet || isAuto) ? '#1a0e00' : 'var(--ink-3)',
+                                      opacity: isAuto ? 0.7 : 1}}
+                              title={isAuto ? `Auto (${dir})` : dir}
+                              onClick={(e) => { e.stopPropagation(); onChange(current === dir ? null : dir); }}>
+                        {dir}
+                      </button>
+                    );
+                  })}
+                </div>
+              );
               return (
-                <div key={c.id} className="conn-row" style={{cursor:'pointer', borderColor: selectedConn === c.id ? 'var(--amber-deep)' : 'var(--hairline)'}}
+                <div key={c.id} className="conn-row" style={{cursor:'pointer', borderColor: selectedConn === c.id ? 'var(--amber-deep)' : 'var(--hairline)', flexDirection:'column', alignItems:'stretch', gap:0}}
                      onClick={() => setSelectedConn(c.id)}>
-                  <div className="from-to">
-                    <span className="tiny">{a.id.toUpperCase()}</span>
-                    <span className="conn-arrow" />
-                    <span className="tiny">{b.id.toUpperCase()}</span>
+                  <div style={{display:'flex', alignItems:'center', gap:4}}>
+                    <div className="from-to" style={{flex:1, minWidth:0}}>
+                      <span className="tiny" style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.name}</span>
+                      <span className="conn-arrow" />
+                      <span className="tiny" style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{b.name}</span>
+                    </div>
+                    <button className={`pixel-tag ${c.mode === 'unified' ? 'amber' : 'ghost'} tiny`}
+                            style={{padding:'1px 5px', cursor:'pointer', flexShrink:0}}
+                            title="Cambiar modo (● unified / ×6 individual)"
+                            onClick={toggleMode}>
+                      {c.mode === 'unified' ? '●' : '×6'}
+                    </button>
+                    <button className="pixel-btn icon sm ghost"
+                            style={{padding:'0 4px', color:'var(--danger)', flexShrink:0, marginLeft:2}}
+                            title="Eliminar conexión"
+                            onClick={deleteConn}>✕</button>
                   </div>
-                  <span className={`pixel-tag ${c.mode === 'unified' ? 'amber' : 'ghost'} tiny`} style={{padding:'1px 5px'}}>
-                    {c.mode === 'unified' ? '●' : '×6'}
-                  </span>
+                  <FacePicker label="exit" current={c.fromAnchor?.side || null} autoDir={auto.aDir}
+                              onChange={(dir) => updateConnById(c.id, { fromAnchor: dir ? {side:dir, t: c.fromAnchor?.t ?? 0.5} : null, customMiddleNodes: null })}/>
+                  <FacePicker label="enter" current={c.toAnchor?.side || null} autoDir={auto.bDir}
+                              onChange={(dir) => updateConnById(c.id, { toAnchor: dir ? {side:dir, t: c.toAnchor?.t ?? 0.5} : null, customMiddleNodes: null })}/>
                 </div>
               );
             })}
@@ -86,7 +133,109 @@ function Inspector({ plan, setPlan, selected, selectedConn, setSelectedConn, onA
         </div>
       )}
 
-      {tab === 'props' && rect && (
+      {tab === 'props' && rect && rect.kind === 'alternate-content' && (
+        <div className="insp-body">
+          <div className="row" style={{justifyContent:'space-between', alignItems:'baseline'}}>
+            <div>
+              <div className="label-amber label">ALT CONTENT · {rect.id.toUpperCase()}</div>
+              <div style={{fontFamily:"'VT323', monospace", fontSize:22, lineHeight:1.1, marginTop:2}}>{rect.name}</div>
+            </div>
+            <button className="pixel-btn icon ghost danger sm" title="Delete" onClick={() => onDelete(rect.id)}>✕</button>
+          </div>
+          <div className="pixel-inset" style={{padding:'5px 8px', fontSize:10, lineHeight:1.5, color:'var(--amber-deep)'}}>
+            AC scenes are pure connectors — they have no physical presence on the canvas. Edit entry/exit below to control where the connecting paths appear.
+          </div>
+          <div className="field">
+            <div className="label">Name</div>
+            <input value={rect.name} onChange={(e) => updateRect({name: e.target.value})}/>
+          </div>
+          <div className="field">
+            <div className="label">Mode</div>
+            <select value={rect.mode || 'unified'} onChange={(e) => updateRect({mode: e.target.value})}>
+              <option value="unified">● Unified (1 shared path)</option>
+              <option value="individual">×6 Individual (6 parallel paths)</option>
+            </select>
+          </div>
+          <div className="field">
+            <div className="label">Entry scene(s) — IN overlay</div>
+            {(() => {
+              const entryIds = rect.entries || (rect.entry ? [rect.entry] : []);
+              const isMulti = !!rect.entries;
+              return (
+                <div style={{display:'flex', flexDirection:'column', gap:4}}>
+                  {entryIds.map((eid, i) => (
+                    <div key={i} style={{display:'flex', gap:4, alignItems:'center'}}>
+                      <select style={{flex:1}} value={eid}
+                              onChange={(e) => {
+                                if (isMulti) {
+                                  const next = entryIds.map((x, j) => j === i ? e.target.value : x);
+                                  updateRect({entries: next, entry: undefined});
+                                } else {
+                                  updateRect({entry: e.target.value, entries: undefined});
+                                }
+                              }}>
+                        <option value="">— none —</option>
+                        {plan.rects.filter(r => r.id !== rect.id && r.kind !== 'alternate-content').map(r =>
+                          <option key={r.id} value={r.id}>{r.name}</option>
+                        )}
+                      </select>
+                      {isMulti && <button className="pixel-btn icon sm ghost" style={{padding:'0 4px', color:'var(--danger)'}}
+                        onClick={() => { const next = entryIds.filter((_, j) => j !== i); updateRect({entries: next.length > 1 ? next : undefined, entry: next.length === 1 ? next[0] : undefined}); }}>✕</button>}
+                    </div>
+                  ))}
+                  <button className="pixel-btn sm ghost" style={{fontSize:10}}
+                    onClick={() => {
+                      const next = [...entryIds, ''];
+                      updateRect({entries: next, entry: undefined});
+                    }}>＋ add entry</button>
+                </div>
+              );
+            })()}
+          </div>
+          <div className="field">
+            <div className="label">Exit scene(s) — OUT overlay</div>
+            {(() => {
+              const exitIds = rect.exits || (rect.exit ? [rect.exit] : []);
+              const isMulti = !!rect.exits;
+              return (
+                <div style={{display:'flex', flexDirection:'column', gap:4}}>
+                  {exitIds.map((xid, i) => (
+                    <div key={i} style={{display:'flex', gap:4, alignItems:'center'}}>
+                      <select style={{flex:1}} value={xid}
+                              onChange={(e) => {
+                                if (isMulti) {
+                                  const next = exitIds.map((x, j) => j === i ? e.target.value : x);
+                                  updateRect({exits: next, exit: undefined});
+                                } else {
+                                  updateRect({exit: e.target.value, exits: undefined});
+                                }
+                              }}>
+                        <option value="">— none —</option>
+                        {plan.rects.filter(r => r.id !== rect.id && r.kind !== 'alternate-content').map(r =>
+                          <option key={r.id} value={r.id}>{r.name}</option>
+                        )}
+                      </select>
+                      {isMulti && <button className="pixel-btn icon sm ghost" style={{padding:'0 4px', color:'var(--danger)'}}
+                        onClick={() => { const next = exitIds.filter((_, j) => j !== i); updateRect({exits: next.length > 1 ? next : undefined, exit: next.length === 1 ? next[0] : undefined}); }}>✕</button>}
+                    </div>
+                  ))}
+                  <button className="pixel-btn sm ghost" style={{fontSize:10}}
+                    onClick={() => {
+                      const next = [...exitIds, ''];
+                      updateRect({exits: next, exit: undefined});
+                    }}>＋ add exit</button>
+                </div>
+              );
+            })()}
+          </div>
+          <div className="field">
+            <div className="label">Unity GameObject ID</div>
+            <input value={rect.gameObject} onChange={(e) => updateRect({gameObject: e.target.value})}/>
+          </div>
+        </div>
+      )}
+
+      {tab === 'props' && rect && rect.kind !== 'alternate-content' && (
         <div className="insp-body">
           <div className="row" style={{justifyContent:'space-between', alignItems:'baseline'}}>
             <div>
@@ -133,8 +282,9 @@ function Inspector({ plan, setPlan, selected, selectedConn, setSelectedConn, onA
               });
             }}>
               <option value="main">Main scene</option>
-              <option value="unified-hub">Unified hub (alt-content)</option>
+              <option value="alternate-content">Alternate Content (connector)</option>
               <option value="pod-room">Room with 6 pods (individual)</option>
+              <option value="column">Column (obstacle)</option>
             </select>
           </div>
 
@@ -147,12 +297,22 @@ function Inspector({ plan, setPlan, selected, selectedConn, setSelectedConn, onA
               <div className="label">Pods (local position inside room)</div>
               <div className="pixel-inset" style={{padding:8, display:'flex', flexDirection:'column', gap:6}}>
                 {(rect.pods || podRoomDefaults).slice(0, 6).map((pod, i) => (
-                  <div key={pod.id || i} className="field-row pod-row">
-                    <input type="number" step="0.1" value={pod.x}
-                           onChange={(e) => updateRect({ pods: (rect.pods || podRoomDefaults).map((p, idx) => idx === i ? { ...p, x: +e.target.value } : p) })}/>
-                    <input type="number" step="0.1" value={pod.y}
-                           onChange={(e) => updateRect({ pods: (rect.pods || podRoomDefaults).map((p, idx) => idx === i ? { ...p, y: +e.target.value } : p) })}/>
-                    <input value={pod.gameObject || ''}
+                  <div key={pod.id || i} style={{display:'flex', flexDirection:'column', gap:3, marginBottom:4, borderBottom:'1px solid var(--hairline)', paddingBottom:4}}>
+                    <div className="field-row pod-row">
+                      <input type="number" step="0.1" value={pod.x} title="X (local)"
+                             onChange={(e) => updateRect({ pods: (rect.pods || podRoomDefaults).map((p, idx) => idx === i ? { ...p, x: +e.target.value } : p) })}/>
+                      <input type="number" step="0.1" value={pod.y} title="Y (local)"
+                             onChange={(e) => updateRect({ pods: (rect.pods || podRoomDefaults).map((p, idx) => idx === i ? { ...p, y: +e.target.value } : p) })}/>
+                      <select value={pod.dir ?? 0} title="Direction"
+                              style={{width:60, fontSize:11}}
+                              onChange={(e) => updateRect({ pods: (rect.pods || podRoomDefaults).map((p, idx) => idx === i ? { ...p, dir: +e.target.value } : p) })}>
+                        <option value={0}>E →</option>
+                        <option value={90}>N ↑</option>
+                        <option value={180}>W ←</option>
+                        <option value={270}>S ↓</option>
+                      </select>
+                    </div>
+                    <input value={pod.gameObject || ''} title="GameObject"
                            onChange={(e) => updateRect({ pods: (rect.pods || podRoomDefaults).map((p, idx) => idx === i ? { ...p, gameObject: e.target.value } : p) })}/>
                   </div>
                 ))}
@@ -171,20 +331,98 @@ function Inspector({ plan, setPlan, selected, selectedConn, setSelectedConn, onA
             <button className="pixel-btn sm ghost" onClick={onRotatePlanCW}>↻ FLOORPLAN</button>
           </div>
           <div className="divider"/>
-          <div className="label">Connections from this scene</div>
+          <div className="label">Connections</div>
           {plan.connections.filter(c => c.from === rect.id || c.to === rect.id).map(c => {
             const other = c.from === rect.id ? c.to : c.from;
             const otherRect = plan.rects.find(r => r.id === other);
+            const isSource = c.from === rect.id;
+            const auto = otherRect ? PathUtil.pickFaces(
+              plan.rects.find(r => r.id === c.from),
+              plan.rects.find(r => r.id === c.to)
+            ) : { aDir: 'E', bDir: 'W' };
+            const toggleMode = (e) => {
+              e.stopPropagation();
+              setPlan(p => ({ ...p, connections: p.connections.map(cc =>
+                cc.id === c.id ? { ...cc, mode: cc.mode === 'unified' ? 'individual' : 'unified', customMiddleNodes: null } : cc
+              )}));
+            };
+            const deleteConn = (e) => {
+              e.stopPropagation();
+              setPlan(p => ({ ...p, connections: p.connections.filter(cc => cc.id !== c.id) }));
+            };
+            const FacePicker = ({ label, current, autoDir, onChange }) => (
+              <div style={{display:'flex', alignItems:'center', gap:2, marginTop:2}}>
+                <span className="tiny muted" style={{minWidth:26, fontSize:9}}>{label}</span>
+                {['N','E','S','W'].map(dir => {
+                  const isAuto = !current && dir === autoDir;
+                  const isSet  = current === dir;
+                  return (
+                    <button key={dir} className="pixel-btn sm ghost"
+                            style={{padding:'0 4px', fontSize:9, lineHeight:'14px', minWidth:16,
+                                    background: isSet ? 'var(--amber-deep)' : isAuto ? 'var(--amber)' : 'var(--panel-2)',
+                                    color: (isSet || isAuto) ? '#1a0e00' : 'var(--ink-3)',
+                                    opacity: isAuto ? 0.7 : 1}}
+                            title={isAuto ? `Auto (${dir})` : dir}
+                            onClick={(e) => { e.stopPropagation(); onChange(current === dir ? null : dir); }}>
+                      {dir}
+                    </button>
+                  );
+                })}
+              </div>
+            );
             return (
-              <div key={c.id} className="conn-row" onClick={() => setSelectedConn(c.id)} style={{cursor:'pointer'}}>
-                <span className="tiny">{c.from === rect.id ? '→' : '←'}</span>
-                <span className="flex1 tiny">{otherRect?.name}</span>
-                <span className={`pixel-tag ${c.mode === 'unified' ? 'amber' : 'ghost'} tiny`} style={{padding:'1px 4px'}}>
-                {c.mode === 'unified' ? '●' : '×6'}
-              </span>
+              <div key={c.id} className="conn-row" onClick={() => setSelectedConn(c.id)} style={{cursor:'pointer', flexDirection:'column', alignItems:'stretch', gap:0}}>
+                <div style={{display:'flex', alignItems:'center', gap:4}}>
+                  <span className="tiny" style={{flexShrink:0}}>{isSource ? '→' : '←'}</span>
+                  <span className="flex1 tiny" style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{otherRect?.name}</span>
+                  <button className={`pixel-tag ${c.mode === 'unified' ? 'amber' : 'ghost'} tiny`}
+                          style={{padding:'1px 4px', cursor:'pointer', flexShrink:0}}
+                          title="Cambiar modo"
+                          onClick={toggleMode}>
+                    {c.mode === 'unified' ? '●' : '×6'}
+                  </button>
+                  <button className="pixel-btn icon sm ghost"
+                          style={{padding:'0 4px', color:'var(--danger)', flexShrink:0, marginLeft:2}}
+                          title="Eliminar" onClick={deleteConn}>✕</button>
+                </div>
+                {isSource
+                  ? <FacePicker label="exit" current={c.fromAnchor?.side || null} autoDir={auto.aDir}
+                                onChange={(dir) => updateConnById(c.id, { fromAnchor: dir ? {side:dir, t: c.fromAnchor?.t ?? 0.5} : null, customMiddleNodes: null })}/>
+                  : <FacePicker label="enter" current={c.toAnchor?.side || null} autoDir={auto.bDir}
+                                onChange={(dir) => updateConnById(c.id, { toAnchor: dir ? {side:dir, t: c.toAnchor?.t ?? 0.5} : null, customMiddleNodes: null })}/>
+                }
               </div>
             );
           })}
+          {/* ── Add new connections inline ── */}
+          <div style={{marginTop:6, display:'flex', flexDirection:'column', gap:4}}>
+            <select className="pixel-input sm" style={{fontSize:11}}
+                    value=""
+                    onChange={(e) => {
+                      if (!e.target.value) return;
+                      const toId = e.target.value;
+                      const newId = 'c' + Math.floor(Math.random()*9000+100);
+                      setPlan(p => ({...p, connections: [...p.connections, {id:newId, from:rect.id, to:toId, mode:'unified'}]}));
+                    }}>
+              <option value="">＋ Conectar salida hacia…</option>
+              {plan.rects
+                .filter(r => r.id !== rect.id && r.kind !== 'alternate-content' && !plan.connections.some(c => c.from === rect.id && c.to === r.id))
+                .map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </select>
+            <select className="pixel-input sm" style={{fontSize:11}}
+                    value=""
+                    onChange={(e) => {
+                      if (!e.target.value) return;
+                      const fromId = e.target.value;
+                      const newId = 'c' + Math.floor(Math.random()*9000+100);
+                      setPlan(p => ({...p, connections: [...p.connections, {id:newId, from:fromId, to:rect.id, mode:'unified'}]}));
+                    }}>
+              <option value="">＋ Conectar entrada desde…</option>
+              {plan.rects
+                .filter(r => r.id !== rect.id && r.kind !== 'alternate-content' && !plan.connections.some(c => c.from === r.id && c.to === rect.id))
+                .map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+            </select>
+          </div>
         </div>
       )}
 
@@ -311,7 +549,7 @@ function CreatorModal({ onClose, onCreate, plan }){
             <div className="label">Scene type</div>
             <select value={form.kind} onChange={(e) => setForm({...form, kind: e.target.value})}>
               <option value="main">Main scene</option>
-              <option value="unified-hub">Unified hub · alt-content (×6)</option>
+              <option value="alternate-content">Alternate Content (connector)</option>
               <option value="pod-room">Room with 6 pods · individual lanes</option>
             </select>
           </div>
@@ -346,31 +584,120 @@ function CreatorModal({ onClose, onCreate, plan }){
 }
 
 // Export view — JSON preview + build command
-function ExportView({ project, plan, onClose }){
+function ExportView({ project, plan, onClose, onSaveTemplate }){
   const [target, setTarget] = useState('android');
   const [buildPath, setBuildPath] = useState('~/Unity/galeria-moderna/');
 
+  const handleDownloadJson = () => {
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${project.id}-v0028.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const json = useMemo(() => {
+    const columns = plan.rects.filter(r => r.kind === 'column');
+    const acIds = new Set(plan.rects.filter(r => r.kind === 'alternate-content').map(r => r.id));
+    const toPoint = n => ({ x: +n.x.toFixed(3), y: +n.y.toFixed(3) });
+    const toPathPayload = lanes => ({
+      nodes: (lanes[0] || []).map(toPoint),
+      lanes: lanes.map(lane => lane.map(toPoint)),
+    });
+    const stripSvg = ref => {
+      if (!ref) return null;
+      const clean = { ...ref };
+      delete clean.svgString;
+      return clean;
+    };
+
+    const regularPaths = plan.connections
+      .filter(c => !acIds.has(c.from) && !acIds.has(c.to))
+      .map(c => {
+        const lanes = PathUtil.computeLanes(c, plan.rects, columns);
+        return {
+          type: 'connection',
+          id: c.id,
+          from: c.from,
+          to: c.to,
+          mode: c.mode,
+          fromAnchor: c.fromAnchor || null,
+          toAnchor: c.toAnchor || null,
+          customMiddleNodes: c.customMiddleNodes || null,
+          customLaneMiddleNodes: c.customLaneMiddleNodes || null,
+          ...toPathPayload(lanes),
+        };
+      });
+
+    const alternateContentPaths = [];
+    plan.rects.filter(r => r.kind === 'alternate-content').forEach(r => {
+      const entryIds = r.entries || (r.entry ? [r.entry] : []);
+      const exitIds = r.exits || (r.exit ? [r.exit] : []);
+      const mode = r.mode || 'unified';
+      entryIds.forEach(entId => {
+        exitIds.forEach(extId => {
+          const routeKey = `${entId}->${extId}`;
+          const customRoute = r.customRoutes?.[routeKey] || {};
+          const synth = {
+            id: `ac-${r.id}-${entId}-${extId}`,
+            from: entId,
+            to: extId,
+            mode,
+            customMiddleNodes: customRoute.customMiddleNodes,
+            customLaneMiddleNodes: customRoute.customLaneMiddleNodes,
+          };
+          const lanes = PathUtil.computeLanes(synth, plan.rects, columns);
+          alternateContentPaths.push({
+            type: 'alternate-content',
+            id: synth.id,
+            acId: r.id,
+            routeKey,
+            from: entId,
+            to: extId,
+            mode,
+            customMiddleNodes: customRoute.customMiddleNodes || null,
+            customLaneMiddleNodes: customRoute.customLaneMiddleNodes || null,
+            ...toPathPayload(lanes),
+          });
+        });
+      });
+    });
+
     const obj = {
       project: project.id,
       version: 'v0028',
       exported: new Date().toISOString(),
       bounds: plan.bounds,
+      sourceFile: plan.sourceFile || null,
+      dwgRef: stripSvg(plan.dwgRef),
       rects: plan.rects.map(r => ({
         id: r.id, name: r.name,
         position: { x: r.x, y: r.y },
         size: { w: r.w, h: r.h },
+        dir: r.dir || 0,
         kind: r.kind,
         gameObject: r.gameObject,
         pods: r.pods,
+        entry: r.entry,
+        exit: r.exit,
+        entries: r.entries,
+        exits: r.exits,
+        mode: r.mode,
+        customRoutes: r.customRoutes,
       })),
       connections: plan.connections.map(c => {
-        const lanes = PathUtil.computeLanes(c, plan.rects);
+        const lanes = PathUtil.computeLanes(c, plan.rects, columns);
         const isIndividual = c.mode === 'individual';
         return {
           id: c.id, from: c.from, to: c.to,
           mode: c.mode,
-          nodesEdited: !!c.customMiddleNodes,
+          fromAnchor: c.fromAnchor || null,
+          toAnchor: c.toAnchor || null,
+          customMiddleNodes: c.customMiddleNodes || null,
+          customLaneMiddleNodes: c.customLaneMiddleNodes || null,
+          nodesEdited: !!(c.customMiddleNodes?.length || c.customLaneMiddleNodes?.some(nodes => nodes?.length)),
           // unified: single path nodes array; individual: array of 6 lane node arrays
           ...(isIndividual
             ? { lanes: lanes.map(lane => lane.map(n => ({ x: +n.x.toFixed(3), y: +n.y.toFixed(3) }))) }
@@ -378,6 +705,7 @@ function ExportView({ project, plan, onClose }){
           ),
         };
       }),
+      paths: [...regularPaths, ...alternateContentPaths],
       tourOrder: plan.tourOrder,
     };
     return JSON.stringify(obj, null, 2);
@@ -451,8 +779,8 @@ function ExportView({ project, plan, onClose }){
         </div>
 
         <div className="row gap-12">
-          <button className="pixel-btn primary" style={{flex:1}}>↓ DOWNLOAD JSON + RUN BUILD</button>
-          <button className="pixel-btn">SAVE AS TEMPLATE</button>
+          <button className="pixel-btn primary" style={{flex:1}} onClick={handleDownloadJson}>↓ DOWNLOAD JSON</button>
+          <button className="pixel-btn" onClick={onSaveTemplate}>⊞ SAVE AS TEMPLATE</button>
         </div>
       </div>
       <div className="export-right">

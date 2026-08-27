@@ -5,7 +5,7 @@ const PathUtil = (function(){
 
   // ── Constants ──────────────────────────────────────────────────────────────
   const LANE_COUNT = 6;
-  let LANE_WIDTH = 1.0;   // meters, each lane is 1m wide
+  let LANE_WIDTH = 0.6;   // meters, each lane is 60cm wide
   let LANE_GAP = 0.1;     // meters gap between lane edges
   let LANE_SPACING = LANE_WIDTH + LANE_GAP;  // center-to-center
   let TOTAL_SPAN = (LANE_COUNT - 1) * LANE_SPACING;
@@ -78,12 +78,139 @@ const PathUtil = (function(){
     return out;
   }
 
+  // ── Obstacle avoidance ────────────────────────────────────────────────────
+  // Check if an orthogonal segment (p1→p2) passes through a rect (world coords)
+  function segmentIntersectsRect(p1, p2, rect){
+    const eps = 0.001;
+    const { x, y, w, h } = rect;
+    if (Math.abs(p1.y - p2.y) < eps){
+      // Horizontal segment
+      const sy = p1.y;
+      const x1 = Math.min(p1.x, p2.x), x2 = Math.max(p1.x, p2.x);
+      return sy > y + eps && sy < y + h - eps && x1 < x + w - eps && x2 > x + eps;
+    } else {
+      // Vertical segment
+      const sx = p1.x;
+      const y1 = Math.min(p1.y, p2.y), y2 = Math.max(p1.y, p2.y);
+      return sx > x + eps && sx < x + w - eps && y1 < y + h - eps && y2 > y + eps;
+    }
+  }
+
+  // Check whether a proposed bypass segment is itself clear of all obstacles
+  function segmentClear(p1, p2, obstacles){
+    return !obstacles.some(o => segmentIntersectsRect(p1, p2, o));
+  }
+
+  // Iteratively push path segments around obstacle rects (world-coord, orthogonal)
+  // Improvements over v1:
+  //  • Clearance padding (CLR) so paths don't skim obstacle edges
+  //  • Bypass validation: tries the preferred side first, falls back to the other
+  //  • Processes all segments before re-checking (avoids thrashing)
+  function avoidObstacles(nodes, obstacles){
+    if (!obstacles || obstacles.length === 0) return nodes;
+    const mrg = LANE_WIDTH * 0.5 + 0.2;  // base margin around obstacles
+    const CLR = 0.25;                     // extra clearance on bypass side (keeps paths clean)
+
+    // Pre-expand all obstacles once
+    const exObs = obstacles.map(o => ({
+      x: o.x - mrg, y: o.y - mrg, w: o.w + mrg*2, h: o.h + mrg*2,
+    }));
+
+    let result = nodes;
+    for (let iter = 0; iter < 14 && result.length >= 2; iter++){
+      let changed = false;
+      const next = [result[0]];
+
+      for (let i = 0; i < result.length - 1; i++){
+        const p1 = result[i], p2 = result[i + 1];
+        let blocked = false;
+
+        for (let oi = 0; oi < exObs.length; oi++){
+          const ex = exObs[oi];
+          if (!segmentIntersectsRect(p1, p2, ex)) continue;
+
+          const eps = 0.001;
+          const isHoriz = Math.abs(p1.y - p2.y) < eps;
+
+          if (isHoriz){
+            // Candidate bypass Ys — prefer the side closest to current Y
+            const aboveY = ex.y + ex.h + CLR;
+            const belowY = ex.y - CLR;
+            const goRight = p2.x > p1.x;
+            const entX = goRight ? ex.x - eps : ex.x + ex.w + eps;
+            const exX  = goRight ? ex.x + ex.w + eps : ex.x - eps;
+
+            let bypassY;
+            const preferAbove = Math.abs(p1.y - aboveY) <= Math.abs(p1.y - belowY);
+            const prim = preferAbove ? aboveY : belowY;
+            const alt  = preferAbove ? belowY : aboveY;
+            // Validate primary bypass (horizontal segment at bypassY)
+            const primOk = segmentClear({x: entX, y: prim}, {x: exX, y: prim}, exObs);
+            bypassY = (primOk ? prim : alt);
+
+            next.push(
+              { x: entX, y: p1.y },
+              { x: entX, y: bypassY },
+              { x: exX,  y: bypassY },
+              { x: exX,  y: p1.y }
+            );
+          } else {
+            // Candidate bypass Xs — prefer side closest to current X
+            const rightX = ex.x + ex.w + CLR;
+            const leftX  = ex.x - CLR;
+            const goUp = p2.y > p1.y;
+            const entY = goUp ? ex.y - eps : ex.y + ex.h + eps;
+            const exY  = goUp ? ex.y + ex.h + eps : ex.y - eps;
+
+            const preferLeft = Math.abs(p1.x - leftX) <= Math.abs(p1.x - rightX);
+            const prim = preferLeft ? leftX : rightX;
+            const alt  = preferLeft ? rightX : leftX;
+            const primOk = segmentClear({x: prim, y: entY}, {x: prim, y: exY}, exObs);
+            const bypassX = (primOk ? prim : alt);
+
+            next.push(
+              { x: p1.x,   y: entY },
+              { x: bypassX, y: entY },
+              { x: bypassX, y: exY },
+              { x: p1.x,   y: exY }
+            );
+          }
+          blocked = true;
+          changed = true;
+          break; // one obstacle per segment per iteration
+        }
+        if (!blocked) next.push(p2);
+      }
+
+      result = removeCollinear(next);
+      if (!changed) break;
+    }
+    return result;
+  }
+
+  // True if rects A and B share a border with overlapping extent (are "wall-to-wall")
+  function rectsTouching(a, b, tol){
+    tol = tol ?? 0.05;
+    if (Math.abs(a.x + a.w - b.x) < tol || Math.abs(b.x + b.w - a.x) < tol){
+      if (a.y < b.y + b.h - tol && b.y < a.y + a.h - tol) return true;
+    }
+    if (Math.abs(a.y + a.h - b.y) < tol || Math.abs(b.y + b.h - a.y) < tol){
+      if (a.x < b.x + b.w - tol && b.x < a.x + a.w - tol) return true;
+    }
+    return false;
+  }
+
   // ── Core orthogonal router ─────────────────────────────────────────────────
   // tA/tB: fractional position (0..1) along source/dest face edge
+  // midFraction: 0..1 controls where along the px→qx (or py→qy) span the
+  //   connector segment is placed. 0.5 = centre (default). Staggering this
+  //   per lane prevents all 6 individual lanes from sharing the same midpoint
+  //   and piling on top of each other.
   function route(a, b, opts = {}){
     const tA  = opts.tA  ?? 0.5;
     const tB  = opts.tB  ?? 0.5;
     const mrg = opts.margin ?? 0.6;
+    const midFrac = opts.midFraction ?? 0.5;
     const pick = pickFaces(a, b);
     const aDir = opts.aDir || pick.aDir;
     const bDir = opts.bDir || pick.bDir;
@@ -98,10 +225,12 @@ const PathUtil = (function(){
 
     const nodes = [{ x: pa.x, y: pa.y }, { x: px, y: py }];
     if (aDir === 'E' || aDir === 'W'){
-      const midX = (px + qx) / 2;
+      // midX staggered along the horizontal span (px → qx)
+      const midX = px + (qx - px) * midFrac;
       nodes.push({ x: midX, y: py }, { x: midX, y: qy });
     } else {
-      const midY = (py + qy) / 2;
+      // midY staggered along the vertical span (py → qy)
+      const midY = py + (qy - py) * midFrac;
       nodes.push({ x: px, y: midY }, { x: qx, y: midY });
     }
     nodes.push({ x: qx, y: qy }, { x: pb.x, y: pb.y });
@@ -113,20 +242,25 @@ const PathUtil = (function(){
   // UNIFIED  → returns 1 lane (center, customizable via customMiddleNodes)
   // INDIVIDUAL → returns 6 parallel lanes spread perpendicular to main direction
   //
-  // Parallel lane rules:
-  //  • All 6 lanes exit from the SAME face
-  //  • Offset by absolute meters (not t-fraction) so spacing is constant
-  //  • tA_i = 0.5 + offset_i / faceLen_A (same for B)
-  //  • This guarantees lanes run parallel and NEVER cross
-  //  • customMiddleNodes (unified only): replaces intermediate waypoints;
-  //    endpoints are always recomputed from face → stays connected when rects move
+  // colObstacles: array of {x,y,w,h} column rects to route around.
+  // Pod positions from unrelated pod-rooms are also treated as soft obstacles.
   //
-  function computeLanes(conn, rects){
+  function computeLanes(conn, rects, colObstacles){
     const a = rects.find(r => r.id === conn.from);
     const b = rects.find(r => r.id === conn.to);
     if (!a || !b) return [];
 
+    // Build full obstacle list: columns + pod positions of non-connected pod-rooms
+    const podObs = rects
+      .filter(r => r.kind === 'pod-room' && r.id !== conn.from && r.id !== conn.to && Array.isArray(r.pods))
+      .flatMap(r => r.pods.map(pod => ({
+        x: r.x + pod.x - 0.4, y: r.y + pod.y - 0.4, w: 0.8, h: 0.8,
+      })));
+    const obstacles = [...(colObstacles || []), ...podObs];
+
     const pick = pickFaces(a, b);
+    const hasFromSideOverride = !!conn.fromAnchor?.side;
+    const hasToSideOverride = !!conn.toAnchor?.side;
     const aDir = conn.fromAnchor?.side || pick.aDir;
     const bDir = conn.toAnchor?.side || pick.bDir;
     // Face lengths: used to convert absolute-meter offsets into t-fractions
@@ -137,11 +271,18 @@ const PathUtil = (function(){
     function buildRoute(tA, tB, opts = {}){
       const start = opts.startPoint || rectEdgeAnchor(a, aDir, tA);
       const end   = opts.endPoint || rectEdgeAnchor(b, bDir, tB);
+      const laneMiddleNodes = Array.isArray(conn.customLaneMiddleNodes?.[opts.laneIdx])
+        ? conn.customLaneMiddleNodes[opts.laneIdx]
+        : null;
+      if (laneMiddleNodes && laneMiddleNodes.length){
+        return removeCollinear([start, ...laneMiddleNodes, end]);
+      }
       if (conn.customMiddleNodes && conn.customMiddleNodes.length){
         // Endpoints are always live (connected to faces), middle nodes are custom
         return removeCollinear([start, ...conn.customMiddleNodes, end]);
       }
-      return route(a, b, { tA, tB, aDir, bDir, startPoint: opts.startPoint, endPoint: opts.endPoint });
+      const nodes = route(a, b, { tA, tB, aDir, bDir, startPoint: opts.startPoint, endPoint: opts.endPoint, midFraction: opts.midFraction });
+      return avoidObstacles(nodes, obstacles);
     }
 
     if (conn.mode !== 'individual'){
@@ -151,7 +292,9 @@ const PathUtil = (function(){
       return [buildRoute(fromT, toT)];
     }
 
-    // Individual: 6 lanes with absolute-meter perpendicular offset
+    // Individual: 6 lanes with absolute-meter perpendicular offset.
+    // Each lane gets a different midFraction so their connector segments are
+    // staggered instead of stacked — prevents the "all 6 lines on top" problem.
     const fromPods = (a.kind === 'pod-room' && Array.isArray(a.pods)) ? a.pods.slice(0, LANE_COUNT) : null;
     const toPods = (b.kind === 'pod-room' && Array.isArray(b.pods)) ? b.pods.slice(0, LANE_COUNT) : null;
     const fromTBase = conn.fromAnchor?.t ?? 0.5;
@@ -159,9 +302,11 @@ const PathUtil = (function(){
     return LANE_OFFSETS.map((offset, laneIdx) => {
       const tA = clamp(fromTBase + offset / flenA, 0.04, 0.96);
       const tB = clamp(toTBase + offset / flenB, 0.04, 0.96);
-      const startPoint = fromPods?.[laneIdx] ? podWorldAnchor(a, fromPods[laneIdx]) : null;
-      const endPoint = toPods?.[laneIdx] ? podWorldAnchor(b, toPods[laneIdx]) : null;
-      return route(a, b, { tA, tB, aDir, bDir, startPoint, endPoint });
+      // Spread connector columns evenly: 1/(n+1), 2/(n+1) … n/(n+1)
+      const midFraction = (laneIdx + 1) / (LANE_COUNT + 1);
+      const startPoint = !hasFromSideOverride && fromPods?.[laneIdx] ? podWorldAnchor(a, fromPods[laneIdx]) : null;
+      const endPoint = !hasToSideOverride && toPods?.[laneIdx] ? podWorldAnchor(b, toPods[laneIdx]) : null;
+      return buildRoute(tA, tB, { startPoint, endPoint, midFraction, laneIdx });
     });
   }
 
@@ -208,7 +353,7 @@ const PathUtil = (function(){
   }
 
   return {
-    route, toPathD, removeCollinear, computeLanes,
+    route, toPathD, removeCollinear, computeLanes, rectsTouching,
     rectCenter, rectEdgeAnchor, rectsOverlap, pickFaces, podWorldAnchor,
     get LANE_COUNT(){ return LANE_COUNT; },
     get LANE_OFFSETS(){ return LANE_OFFSETS; },
